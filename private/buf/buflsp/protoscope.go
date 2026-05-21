@@ -21,7 +21,7 @@ import (
 	"sync"
 	"unicode/utf16"
 
-	"github.com/bufbuild/protocompile/protoscope"
+	"github.com/bufbuild/protocompile/experimental/protoscope"
 	"go.lsp.dev/protocol"
 )
 
