@@ -169,7 +169,7 @@ func (s *server) Initialize(
 			DocumentLinkProvider:    &protocol.DocumentLinkOptions{},
 			CodeLensProvider:        &protocol.CodeLensOptions{},
 			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{
-				Commands: []string{commandUpdateAllDeps, commandCheckUpdates, CommandRunGenerate, CommandCheckPluginUpdates},
+				Commands: []string{commandUpdateAllDeps, commandCheckUpdates, CommandRunGenerate, CommandCheckPluginUpdates, commandDisassembleProtoscope},
 			},
 		},
 		ServerInfo: info,
@@ -227,6 +227,10 @@ func (s *server) DidOpen(
 	ctx context.Context,
 	params *protocol.DidOpenTextDocumentParams,
 ) error {
+	if isProtoscopeURI(params.TextDocument.URI) {
+		s.protoscopeManager.Track(ctx, params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text)
+		return nil
+	}
 	if isBufYAMLURI(params.TextDocument.URI) {
 		s.bufYAMLManager.Track(params.TextDocument.URI, params.TextDocument.Text)
 		s.bufYAMLManager.CheckIgnorePaths(params.TextDocument.URI)
@@ -256,6 +260,10 @@ func (s *server) DidChange(
 	ctx context.Context,
 	params *protocol.DidChangeTextDocumentParams,
 ) error {
+	if isProtoscopeURI(params.TextDocument.URI) {
+		s.protoscopeManager.Track(ctx, params.TextDocument.URI, params.TextDocument.Version, params.ContentChanges[0].Text)
+		return nil
+	}
 	if isBufYAMLURI(params.TextDocument.URI) {
 		s.bufYAMLManager.Track(params.TextDocument.URI, params.ContentChanges[0].Text)
 		s.bufYAMLManager.CheckIgnorePaths(params.TextDocument.URI)
@@ -312,6 +320,9 @@ func (s *server) Formatting(
 	ctx context.Context,
 	params *protocol.DocumentFormattingParams,
 ) ([]protocol.TextEdit, error) {
+	if isProtoscopeURI(params.TextDocument.URI) {
+		return s.protoscopeManager.Formatting(ctx, params.TextDocument.URI)
+	}
 	if isBufYAMLURI(params.TextDocument.URI) || isBufGenYAMLURI(params.TextDocument.URI) ||
 		isBufPolicyYAMLURI(params.TextDocument.URI) || isBufLockURI(params.TextDocument.URI) {
 		return nil, nil
@@ -362,6 +373,10 @@ func (s *server) DidClose(
 	ctx context.Context,
 	params *protocol.DidCloseTextDocumentParams,
 ) error {
+	if isProtoscopeURI(params.TextDocument.URI) {
+		s.protoscopeManager.Close(ctx, params.TextDocument.URI)
+		return nil
+	}
 	if isBufYAMLURI(params.TextDocument.URI) {
 		s.bufYAMLManager.Close(ctx, params.TextDocument.URI)
 		return nil
@@ -418,6 +433,9 @@ func (s *server) Hover(
 	ctx context.Context,
 	params *protocol.HoverParams,
 ) (*protocol.Hover, error) {
+	if isProtoscopeURI(params.TextDocument.URI) {
+		return s.protoscopeManager.GetHover(ctx, params.TextDocument.URI, params.Position)
+	}
 	if isBufYAMLURI(params.TextDocument.URI) {
 		return s.bufYAMLManager.GetHover(params.TextDocument.URI, params.Position), nil
 	}
@@ -605,6 +623,9 @@ func (s *server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSy
 	result []any, // []protocol.SymbolInformation
 	err error,
 ) {
+	if isProtoscopeURI(params.TextDocument.URI) {
+		return s.protoscopeManager.GetDocumentSymbols(ctx, params.TextDocument.URI)
+	}
 	file := s.fileManager.Get(params.TextDocument.URI)
 	if file == nil {
 		return nil, nil
@@ -709,6 +730,12 @@ func (s *server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 			return nil, fmt.Errorf("%s: %w", params.Command, err)
 		}
 		return nil, nil
+	case commandDisassembleProtoscope:
+		res, err := s.protoscopeManager.ExecuteDisassemble(ctx, uri)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", params.Command, err)
+		}
+		return res, nil
 	default:
 		return nil, fmt.Errorf("unknown command: %q", params.Command)
 	}

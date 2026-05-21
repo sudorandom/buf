@@ -104,6 +104,7 @@ func Serve(
 	lsp.bufGenYAMLManager = newBufGenYAMLManager(lsp)
 	lsp.bufPolicyYAMLManager = newBufPolicyYAMLManager()
 	lsp.bufLockManager = newBufLockManager()
+	lsp.protoscopeManager = newProtoscopeManager(lsp)
 	off := protocol.TraceOff
 	lsp.traceValue.Store(&off)
 
@@ -141,6 +142,7 @@ type lsp struct {
 	bufGenYAMLManager    *bufGenYAMLManager
 	bufPolicyYAMLManager *bufPolicyYAMLManager
 	bufLockManager       *bufLockManager
+	protoscopeManager    *protoscopeManager
 	queryExecutor        *incremental.Executor
 	opener               source.Map
 	irSession            *ir.Session

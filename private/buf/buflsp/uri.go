@@ -69,3 +69,8 @@ func normalizeURI(u protocol.URI) protocol.URI {
 
 	return protocol.URI("file:///" + strings.Join(segments, "/"))
 }
+
+// isProtoscopeURI reports whether uri refers to a .protoscope file.
+func isProtoscopeURI(uri protocol.URI) bool {
+	return strings.HasSuffix(strings.ToLower(uri.Filename()), ".protoscope")
+}
