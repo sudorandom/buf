@@ -26,7 +26,7 @@ import (
 
 // isBufLockURI reports whether uri refers to a buf.lock file.
 func isBufLockURI(uri protocol.URI) bool {
-	return filepath.Base(uri.Filename()) == bufconfig.DefaultBufLockFileName
+	return filepath.Base(safeFilename(uri)) == bufconfig.DefaultBufLockFileName
 }
 
 // bufLockManager tracks open buf.lock files in the LSP session.

@@ -91,7 +91,7 @@ func (m *protoscopeManager) Has(uri protocol.URI) bool {
 
 // checkAndPublishDiagnostics runs diagnostics on the protoscope text and publishes them.
 func (m *protoscopeManager) checkAndPublishDiagnostics(ctx context.Context, uri protocol.URI, version int32, text string) {
-	diags := protoscope.Diagnostics(uri.Filename(), []byte(text))
+	diags := protoscope.Diagnostics(safeFilename(uri), []byte(text))
 	protocolDiags := make([]protocol.Diagnostic, len(diags))
 	for i, d := range diags {
 		var severity protocol.DiagnosticSeverity
@@ -132,7 +132,7 @@ func (m *protoscopeManager) GetHover(ctx context.Context, uri protocol.URI, pos 
 	line := int(pos.Line) + 1
 	col := int(pos.Character) + 1
 
-	h, err := protoscope.Hover(uri.Filename(), []byte(file.text), line, col)
+	h, err := protoscope.Hover(safeFilename(uri), []byte(file.text), line, col)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +157,7 @@ func (m *protoscopeManager) GetDocumentSymbols(ctx context.Context, uri protocol
 		return nil, nil
 	}
 
-	symbols, _ := protoscope.DocumentSymbols(uri.Filename(), []byte(file.text))
+	symbols, _ := protoscope.DocumentSymbols(safeFilename(uri), []byte(file.text))
 	docSymbols := convertProtoscopeDocumentSymbols(symbols)
 
 	anyResults := make([]any, len(docSymbols))
@@ -174,7 +174,7 @@ func (m *protoscopeManager) Formatting(ctx context.Context, uri protocol.URI) ([
 		return nil, nil
 	}
 
-	binary, diags := protoscope.Assemble(uri.Filename(), []byte(file.text))
+	binary, diags := protoscope.Assemble(safeFilename(uri), []byte(file.text))
 	var hasError bool
 	for _, d := range diags {
 		if d.Level == protoscope.SeverityError {
@@ -296,7 +296,7 @@ const commandDisassembleProtoscope = "buf.protoscope.disassemble.server"
 
 // ExecuteDisassemble reads the binary file at the given URI and disassembles it to protoscope text format.
 func (m *protoscopeManager) ExecuteDisassemble(ctx context.Context, uri protocol.URI) (string, error) {
-	filename := uri.Filename()
+	filename := safeFilename(uri)
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return "", err
@@ -314,7 +314,7 @@ func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.UR
 	if file, ok := m.Get(uri); ok {
 		text = file.text
 	} else {
-		filename := uri.Filename()
+		filename := safeFilename(uri)
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			return "", err
@@ -322,7 +322,7 @@ func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.UR
 		text = string(data)
 	}
 
-	binary, diags := protoscope.Assemble(uri.Filename(), []byte(text))
+	binary, diags := protoscope.Assemble(safeFilename(uri), []byte(text))
 	var hasError bool
 	var errorMessages []string
 	for _, d := range diags {

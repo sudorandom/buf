@@ -60,6 +60,16 @@ func TestNormalizeURI(t *testing.T) {
 			expected: "untitled:user%40host",
 		},
 		{
+			name:     "non-file-uri-single-leading-slash",
+			input:    "untitled:/Untitled-2",
+			expected: "untitled:Untitled-2",
+		},
+		{
+			name:     "non-file-uri-multiple-leading-slashes",
+			input:    "untitled:///Untitled-2",
+			expected: "untitled:Untitled-2",
+		},
+		{
 			name:     "at-sign-and-windows-drive-letter-both-encoded",
 			input:    "file:///C:/Users/user@host/foo.proto",
 			expected: "file:///c%3A/Users/user%40host/foo.proto",

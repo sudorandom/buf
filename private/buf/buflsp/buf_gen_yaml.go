@@ -40,7 +40,7 @@ const CommandCheckPluginUpdates = "buf.generate.checkPluginUpdates"
 
 // isBufGenYAMLURI reports whether uri refers to a buf.gen.yaml file.
 func isBufGenYAMLURI(uri protocol.URI) bool {
-	return filepath.Base(uri.Filename()) == bufconfig.DefaultBufGenYAMLFileName
+	return filepath.Base(safeFilename(uri)) == bufconfig.DefaultBufGenYAMLFileName
 }
 
 // bufGenYAMLManager tracks open buf.gen.yaml files in the LSP session.

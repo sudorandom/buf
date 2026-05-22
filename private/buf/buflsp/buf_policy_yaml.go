@@ -27,7 +27,7 @@ import (
 
 // isBufPolicyYAMLURI reports whether uri refers to a buf.policy.yaml file.
 func isBufPolicyYAMLURI(uri protocol.URI) bool {
-	return filepath.Base(uri.Filename()) == bufpolicyconfig.DefaultBufPolicyYAMLFileName
+	return filepath.Base(safeFilename(uri)) == bufpolicyconfig.DefaultBufPolicyYAMLFileName
 }
 
 // bufPolicyYAMLManager tracks open buf.policy.yaml files in the LSP session.

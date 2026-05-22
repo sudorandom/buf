@@ -38,7 +38,16 @@ func normalizeURI(u protocol.URI) protocol.URI {
 
 	after, found := strings.CutPrefix(str, "file:///")
 	if !found {
-		// Non-file URIs: only encode @.
+		uParsed, err := url.Parse(str)
+		if err == nil && uParsed.Scheme != "" {
+			name := uParsed.Opaque
+			if name == "" {
+				name = strings.TrimPrefix(uParsed.Path, "/")
+			}
+			name = strings.ReplaceAll(name, "@", "%40")
+			return protocol.URI(uParsed.Scheme + ":" + name)
+		}
+		// Non-file URIs fallback: only encode @.
 		return protocol.URI(strings.ReplaceAll(str, "@", "%40"))
 	}
 
@@ -70,7 +79,24 @@ func normalizeURI(u protocol.URI) protocol.URI {
 	return protocol.URI("file:///" + strings.Join(segments, "/"))
 }
 
+// safeFilename returns the filename for the URI, or a fallback string if it's not a file URI.
+func safeFilename(u protocol.URI) string {
+	str := string(u)
+	if !strings.HasPrefix(str, "file://") {
+		parsed, err := url.Parse(str)
+		if err != nil {
+			return str
+		}
+		if parsed.Opaque != "" {
+			return parsed.Opaque
+		}
+		return parsed.Path
+	}
+	return u.Filename()
+}
+
 // isProtoscopeURI reports whether uri refers to a .protoscope file.
 func isProtoscopeURI(uri protocol.URI) bool {
-	return strings.HasSuffix(strings.ToLower(uri.Filename()), ".protoscope")
+	return strings.HasSuffix(strings.ToLower(safeFilename(uri)), ".protoscope")
 }
+

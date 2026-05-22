@@ -115,6 +115,7 @@ func TestIsBufYAMLURI(t *testing.T) {
 		{"file:///home/user/project/buf.work.yaml", false},
 		{"file:///home/user/project/foo.proto", false},
 		{"file:///home/user/project/buf.yaml.bak", false},
+		{"untitled:Untitled-1", false},
 	}
 
 	for _, tt := range tests {
@@ -136,6 +137,7 @@ func TestIsBufGenYAMLURI(t *testing.T) {
 		{"file:///home/user/project/buf.yaml", false},
 		{"file:///home/user/project/buf.gen.yaml.bak", false},
 		{"file:///home/user/project/foo.proto", false},
+		{"untitled:Untitled-1", false},
 	}
 
 	for _, tt := range tests {
@@ -157,6 +159,7 @@ func TestIsBufPolicyYAMLURI(t *testing.T) {
 		{"file:///home/user/project/buf.yaml", false},
 		{"file:///home/user/project/buf.policy.yaml.bak", false},
 		{"file:///home/user/project/foo.proto", false},
+		{"untitled:Untitled-1", false},
 	}
 
 	for _, tt := range tests {
@@ -178,6 +181,7 @@ func TestIsBufLockURI(t *testing.T) {
 		{"file:///home/user/project/buf.yaml", false},
 		{"file:///home/user/project/buf.lock.bak", false},
 		{"file:///home/user/project/foo.proto", false},
+		{"untitled:Untitled-1", false},
 	}
 
 	for _, tt := range tests {

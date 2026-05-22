@@ -291,3 +291,81 @@ func TestProtoscopeAssembleCommandError(t *testing.T) {
 	}, &assembledBase64)
 	assert.Error(t, cmdErr)
 }
+
+func TestProtoscopeUntitled(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempDir := t.TempDir()
+	dummyPath := filepath.Join(tempDir, "dummy.proto")
+	err := os.WriteFile(dummyPath, []byte("syntax = \"proto3\";"), 0644)
+	require.NoError(t, err)
+
+	clientJSONConn, _ := setupLSPServer(t, dummyPath)
+
+	untitledURI := protocol.URI("untitled:/Untitled-1")
+	content := `1: 150
+2: {
+  3: "hello"
+}
+`
+
+	// 1. Send DidOpen for untitled document with language ID protoscope
+	err = clientJSONConn.Notify(ctx, protocol.MethodTextDocumentDidOpen, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{
+			URI:        untitledURI,
+			LanguageID: "protoscope",
+			Version:    1,
+			Text:       content,
+		},
+	})
+	require.NoError(t, err)
+
+	// 2. Test Hover on untitled URI
+	var hover *protocol.Hover
+	_, hoverErr := clientJSONConn.Call(ctx, protocol.MethodTextDocumentHover, protocol.HoverParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: untitledURI,
+			},
+			Position: protocol.Position{
+				Line:      0,
+				Character: 0,
+			},
+		},
+	}, &hover)
+	require.NoError(t, hoverErr)
+	require.NotNil(t, hover)
+	assert.Contains(t, hover.Contents.Value, "Field Number")
+
+	// 3. Test Document Symbols on untitled URI
+	var symbols []protocol.DocumentSymbol
+	_, symErr := clientJSONConn.Call(ctx, protocol.MethodTextDocumentDocumentSymbol, protocol.DocumentSymbolParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: untitledURI,
+		},
+	}, &symbols)
+	require.NoError(t, symErr)
+	require.Len(t, symbols, 2)
+
+	// 4. Test Formatting on untitled URI
+	var textEdits []protocol.TextEdit
+	_, formatErr := clientJSONConn.Call(ctx, protocol.MethodTextDocumentFormatting, protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: untitledURI,
+		},
+	}, &textEdits)
+	require.NoError(t, formatErr)
+
+	// 5. Test Execute Command (Assemble) on untitled URI with mismatched slash
+	var assembledBase64 string
+	_, cmdErr := clientJSONConn.Call(ctx, protocol.MethodWorkspaceExecuteCommand, protocol.ExecuteCommandParams{
+		Command:   "buf.protoscope.assemble.server",
+		Arguments: []any{"untitled:Untitled-1"},
+	}, &assembledBase64)
+	require.NoError(t, cmdErr)
+
+	binaryData, err := base64.StdEncoding.DecodeString(assembledBase64)
+	require.NoError(t, err)
+	assert.NotEmpty(t, binaryData)
+}

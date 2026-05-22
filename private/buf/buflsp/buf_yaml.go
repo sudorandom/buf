@@ -101,7 +101,7 @@ type bufYAMLDep struct {
 
 // isBufYAMLURI reports whether uri refers to a buf.yaml file.
 func isBufYAMLURI(uri protocol.URI) bool {
-	return filepath.Base(uri.Filename()) == bufconfig.DefaultBufYAMLFileName
+	return filepath.Base(safeFilename(uri)) == bufconfig.DefaultBufYAMLFileName
 }
 
 // Track opens or refreshes a buf.yaml file.
