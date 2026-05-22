@@ -83,6 +83,12 @@ func (m *protoscopeManager) Get(uri protocol.URI) (*protoscopeFile, bool) {
 	return f, ok
 }
 
+// Has reports whether the URI is tracked as a protoscope file.
+func (m *protoscopeManager) Has(uri protocol.URI) bool {
+	_, ok := m.Get(uri)
+	return ok
+}
+
 // checkAndPublishDiagnostics runs diagnostics on the protoscope text and publishes them.
 func (m *protoscopeManager) checkAndPublishDiagnostics(ctx context.Context, uri protocol.URI, version int32, text string) {
 	diags := protoscope.Diagnostics(uri.Filename(), []byte(text))

@@ -227,7 +227,7 @@ func (s *server) DidOpen(
 	ctx context.Context,
 	params *protocol.DidOpenTextDocumentParams,
 ) error {
-	if isProtoscopeURI(params.TextDocument.URI) {
+	if isProtoscopeURI(params.TextDocument.URI) || params.TextDocument.LanguageID == "protoscope" {
 		s.protoscopeManager.Track(ctx, params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text)
 		return nil
 	}
@@ -260,7 +260,7 @@ func (s *server) DidChange(
 	ctx context.Context,
 	params *protocol.DidChangeTextDocumentParams,
 ) error {
-	if isProtoscopeURI(params.TextDocument.URI) {
+	if isProtoscopeURI(params.TextDocument.URI) || s.protoscopeManager.Has(params.TextDocument.URI) {
 		s.protoscopeManager.Track(ctx, params.TextDocument.URI, params.TextDocument.Version, params.ContentChanges[0].Text)
 		return nil
 	}
@@ -320,7 +320,7 @@ func (s *server) Formatting(
 	ctx context.Context,
 	params *protocol.DocumentFormattingParams,
 ) ([]protocol.TextEdit, error) {
-	if isProtoscopeURI(params.TextDocument.URI) {
+	if isProtoscopeURI(params.TextDocument.URI) || s.protoscopeManager.Has(params.TextDocument.URI) {
 		return s.protoscopeManager.Formatting(ctx, params.TextDocument.URI)
 	}
 	if isBufYAMLURI(params.TextDocument.URI) || isBufGenYAMLURI(params.TextDocument.URI) ||
@@ -373,7 +373,7 @@ func (s *server) DidClose(
 	ctx context.Context,
 	params *protocol.DidCloseTextDocumentParams,
 ) error {
-	if isProtoscopeURI(params.TextDocument.URI) {
+	if isProtoscopeURI(params.TextDocument.URI) || s.protoscopeManager.Has(params.TextDocument.URI) {
 		s.protoscopeManager.Close(ctx, params.TextDocument.URI)
 		return nil
 	}
@@ -433,7 +433,7 @@ func (s *server) Hover(
 	ctx context.Context,
 	params *protocol.HoverParams,
 ) (*protocol.Hover, error) {
-	if isProtoscopeURI(params.TextDocument.URI) {
+	if isProtoscopeURI(params.TextDocument.URI) || s.protoscopeManager.Has(params.TextDocument.URI) {
 		return s.protoscopeManager.GetHover(ctx, params.TextDocument.URI, params.Position)
 	}
 	if isBufYAMLURI(params.TextDocument.URI) {
@@ -623,7 +623,7 @@ func (s *server) DocumentSymbol(ctx context.Context, params *protocol.DocumentSy
 	result []any, // []protocol.SymbolInformation
 	err error,
 ) {
-	if isProtoscopeURI(params.TextDocument.URI) {
+	if isProtoscopeURI(params.TextDocument.URI) || s.protoscopeManager.Has(params.TextDocument.URI) {
 		return s.protoscopeManager.GetDocumentSymbols(ctx, params.TextDocument.URI)
 	}
 	file := s.fileManager.Get(params.TextDocument.URI)
