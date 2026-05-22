@@ -15,6 +15,7 @@
 package buflsp_test
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -243,4 +244,50 @@ func TestProtoscopeDisassembleCommand(t *testing.T) {
 	}, &disassembledText)
 	require.NoError(t, cmdErr)
 	assert.Contains(t, disassembledText, "1: 150")
+}
+
+func TestProtoscopeAssembleCommand(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "test.protoscope")
+	content := "1: 150\n"
+	err := os.WriteFile(filePath, []byte(content), 0644)
+	require.NoError(t, err)
+
+	clientJSONConn, testURI := setupLSPServer(t, filePath)
+
+	var assembledBase64 string
+	_, cmdErr := clientJSONConn.Call(ctx, protocol.MethodWorkspaceExecuteCommand, protocol.ExecuteCommandParams{
+		Command:   "buf.protoscope.assemble.server",
+		Arguments: []any{string(testURI)},
+	}, &assembledBase64)
+	require.NoError(t, cmdErr)
+
+	binaryData, err := base64.StdEncoding.DecodeString(assembledBase64)
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x08, 0x96, 0x01}, binaryData)
+}
+
+func TestProtoscopeAssembleCommandError(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "test.protoscope")
+	content := `1:
+2: {
+`
+	err := os.WriteFile(filePath, []byte(content), 0644)
+	require.NoError(t, err)
+
+	clientJSONConn, testURI := setupLSPServer(t, filePath)
+
+	var assembledBase64 string
+	_, cmdErr := clientJSONConn.Call(ctx, protocol.MethodWorkspaceExecuteCommand, protocol.ExecuteCommandParams{
+		Command:   "buf.protoscope.assemble.server",
+		Arguments: []any{string(testURI)},
+	}, &assembledBase64)
+	assert.Error(t, cmdErr)
 }

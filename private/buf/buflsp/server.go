@@ -169,7 +169,7 @@ func (s *server) Initialize(
 			DocumentLinkProvider:    &protocol.DocumentLinkOptions{},
 			CodeLensProvider:        &protocol.CodeLensOptions{},
 			ExecuteCommandProvider: &protocol.ExecuteCommandOptions{
-				Commands: []string{commandUpdateAllDeps, commandCheckUpdates, CommandRunGenerate, CommandCheckPluginUpdates, commandDisassembleProtoscope},
+				Commands: []string{commandUpdateAllDeps, commandCheckUpdates, CommandRunGenerate, CommandCheckPluginUpdates, commandDisassembleProtoscope, commandAssembleProtoscope},
 			},
 		},
 		ServerInfo: info,
@@ -732,6 +732,12 @@ func (s *server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 		return nil, nil
 	case commandDisassembleProtoscope:
 		res, err := s.protoscopeManager.ExecuteDisassemble(ctx, uri)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", params.Command, err)
+		}
+		return res, nil
+	case commandAssembleProtoscope:
+		res, err := s.protoscopeManager.ExecuteAssemble(ctx, uri)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", params.Command, err)
 		}

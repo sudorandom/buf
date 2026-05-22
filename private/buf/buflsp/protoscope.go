@@ -16,6 +16,8 @@ package buflsp
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -294,4 +296,38 @@ func (m *protoscopeManager) ExecuteDisassemble(ctx context.Context, uri protocol
 		return "", err
 	}
 	return protoscope.Disassemble(data, protoscope.DisassembleOptions{})
+}
+
+// commandAssembleProtoscope is the command to assemble protoscope text format to binary.
+const commandAssembleProtoscope = "buf.protoscope.assemble.server"
+
+// ExecuteAssemble reads the protoscope file (either from the tracker or from disk)
+// and compiles it to a binary protobuf file. Returns the binary content encoded as a base64 string.
+func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.URI) (string, error) {
+	var text string
+	if file, ok := m.Get(uri); ok {
+		text = file.text
+	} else {
+		filename := uri.Filename()
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			return "", err
+		}
+		text = string(data)
+	}
+
+	binary, diags := protoscope.Assemble(uri.Filename(), []byte(text))
+	var hasError bool
+	var errorMessages []string
+	for _, d := range diags {
+		if d.Level == protoscope.SeverityError {
+			hasError = true
+			errorMessages = append(errorMessages, d.Message)
+		}
+	}
+	if hasError {
+		return "", fmt.Errorf("assembly failed with errors:\n%s", strings.Join(errorMessages, "\n"))
+	}
+
+	return base64.StdEncoding.EncodeToString(binary), nil
 }
