@@ -42,7 +42,10 @@ func newRefParser(logger *slog.Logger) *refParser {
 			logger,
 			internal.WithRawRefProcessor(processRawRef),
 			internal.WithSingleFormat(formatBin),
-			internal.WithSingleFormat(formatBinpb),
+			internal.WithSingleFormat(
+				formatBinpb,
+				internal.WithSingleCustomOptionKey(variantKey),
+			),
 			internal.WithSingleFormat(
 				formatJSON,
 				internal.WithSingleCustomOptionKey(useProtoNamesKey),
@@ -54,7 +57,10 @@ func newRefParser(logger *slog.Logger) *refParser {
 				internal.WithSingleCustomOptionKey(useProtoNamesKey),
 				internal.WithSingleCustomOptionKey(useEnumNumbersKey),
 			),
-			internal.WithSingleFormat(formatProtoscope),
+			internal.WithSingleFormat(
+				formatProtoscope,
+				internal.WithSingleCustomOptionKey(variantKey),
+			),
 			internal.WithSingleFormat(
 				formatBingz,
 				internal.WithSingleDefaultCompressionType(
@@ -101,7 +107,10 @@ func newMessageRefParser(logger *slog.Logger, options ...MessageRefParserOption)
 			logger,
 			internal.WithRawRefProcessor(newProcessRawRefMessage(messageRefParserOptions.defaultMessageEncoding)),
 			internal.WithSingleFormat(formatBin),
-			internal.WithSingleFormat(formatBinpb),
+			internal.WithSingleFormat(
+				formatBinpb,
+				internal.WithSingleCustomOptionKey(variantKey),
+			),
 			internal.WithSingleFormat(
 				formatJSON,
 				internal.WithSingleCustomOptionKey(useProtoNamesKey),
@@ -113,7 +122,10 @@ func newMessageRefParser(logger *slog.Logger, options ...MessageRefParserOption)
 				internal.WithSingleCustomOptionKey(useProtoNamesKey),
 				internal.WithSingleCustomOptionKey(useEnumNumbersKey),
 			),
-			internal.WithSingleFormat(formatProtoscope),
+			internal.WithSingleFormat(
+				formatProtoscope,
+				internal.WithSingleCustomOptionKey(variantKey),
+			),
 			internal.WithSingleFormat(
 				formatBingz,
 				internal.WithSingleDefaultCompressionType(

@@ -47,6 +47,7 @@ const (
 
 	useProtoNamesKey  = "use_proto_names"
 	useEnumNumbersKey = "use_enum_numbers"
+	variantKey        = "variant"
 )
 
 var (
@@ -109,6 +110,7 @@ type MessageRef interface {
 	// UseEnumNumbers only applies for MessageEncodingYAML at this time.
 	UseEnumNumbers() bool
 	IsNull() bool
+	CustomOptionValue(key string) (string, bool)
 	internalSingleRef() internal.SingleRef
 }
 

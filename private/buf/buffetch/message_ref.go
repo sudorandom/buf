@@ -89,3 +89,10 @@ func getTrueOrFalseForSingleRef(singleRef internal.SingleRef, key string) (bool,
 		return false, internal.NewOptionsInvalidValueForKeyError(key, value)
 	}
 }
+
+func (r *messageRef) CustomOptionValue(key string) (string, bool) {
+	if r.singleRef == nil {
+		return "", false
+	}
+	return r.singleRef.CustomOptionValue(key)
+}
