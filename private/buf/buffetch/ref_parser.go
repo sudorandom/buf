@@ -54,6 +54,7 @@ func newRefParser(logger *slog.Logger) *refParser {
 				internal.WithSingleCustomOptionKey(useProtoNamesKey),
 				internal.WithSingleCustomOptionKey(useEnumNumbersKey),
 			),
+			internal.WithSingleFormat(formatProtoscope),
 			internal.WithSingleFormat(
 				formatBingz,
 				internal.WithSingleDefaultCompressionType(
@@ -112,6 +113,7 @@ func newMessageRefParser(logger *slog.Logger, options ...MessageRefParserOption)
 				internal.WithSingleCustomOptionKey(useProtoNamesKey),
 				internal.WithSingleCustomOptionKey(useEnumNumbersKey),
 			),
+			internal.WithSingleFormat(formatProtoscope),
 			internal.WithSingleFormat(
 				formatBingz,
 				internal.WithSingleDefaultCompressionType(
@@ -773,6 +775,8 @@ func newProcessRawRefMessage(defaultMessageEncoding MessageEncoding) func(*inter
 				format = formatTxtpb
 			case ".yaml":
 				format = formatYAML
+			case ".protoscope":
+				format = formatProtoscope
 			case ".gz":
 				compressionType = internal.CompressionTypeGzip
 				switch filepath.Ext(strings.TrimSuffix(rawRef.Path, filepath.Ext(rawRef.Path))) {
@@ -784,6 +788,8 @@ func newProcessRawRefMessage(defaultMessageEncoding MessageEncoding) func(*inter
 					format = formatTxtpb
 				case ".yaml":
 					format = formatYAML
+				case ".protoscope":
+					format = formatProtoscope
 				default:
 					return fmt.Errorf("path %q had .gz extension with unknown format", rawRef.Path)
 				}
@@ -798,6 +804,8 @@ func newProcessRawRefMessage(defaultMessageEncoding MessageEncoding) func(*inter
 					format = formatTxtpb
 				case ".yaml":
 					format = formatYAML
+				case ".protoscope":
+					format = formatProtoscope
 				default:
 					return fmt.Errorf("path %q had .zst extension with unknown format", rawRef.Path)
 				}
@@ -826,6 +834,8 @@ func parseMessageEncoding(format string) (MessageEncoding, error) {
 		return MessageEncodingTxtpb, nil
 	case formatYAML:
 		return MessageEncodingYAML, nil
+	case formatProtoscope:
+		return MessageEncodingProtoscope, nil
 	default:
 		return 0, fmt.Errorf("invalid format for message: %q", format)
 	}

@@ -4440,6 +4440,72 @@ func TestConvertRoundTrip(t *testing.T) {
 		)
 		assert.JSONEq(t, `{"one":"55"}`, decodedMessage.String())
 	})
+	t.Run("stdin and stdout protoscope roundtrip", func(t *testing.T) {
+		t.Parallel()
+		stdin := bytes.NewBufferString(`{"one":"55"}`)
+		encodedMessage := bytes.NewBuffer(nil)
+		decodedMessage := bytes.NewBuffer(nil)
+		testRun(
+			t,
+			0,
+			stdin,
+			encodedMessage,
+			"convert",
+			filepath.Join(tempDir, "image.binpb"),
+			"--type",
+			"buf.Foo",
+			"--from",
+			"-#format=json",
+			"--to",
+			"-#format=protoscope",
+		)
+		assert.Contains(t, encodedMessage.String(), "1: 55")
+		testRun(
+			t,
+			0,
+			encodedMessage,
+			decodedMessage,
+			"convert",
+			filepath.Join(tempDir, "image.binpb"),
+			"--type",
+			"buf.Foo",
+			"--from",
+			"-#format=protoscope",
+			"--to",
+			"-#format=json",
+		)
+		assert.JSONEq(t, `{"one":"55"}`, decodedMessage.String())
+	})
+	t.Run("stdin and stdout protoscope schemaless roundtrip", func(t *testing.T) {
+		t.Parallel()
+		stdin := bytes.NewBufferString("1: 55\n")
+		encodedMessage := bytes.NewBuffer(nil)
+		decodedMessage := bytes.NewBuffer(nil)
+		testRun(
+			t,
+			0,
+			stdin,
+			encodedMessage,
+			"convert",
+			"--from",
+			"-#format=protoscope",
+			"--to",
+			"-#format=binpb",
+		)
+		assert.Equal(t, []byte{0x08, 0x37}, encodedMessage.Bytes())
+		testRun(
+			t,
+			0,
+			encodedMessage,
+			decodedMessage,
+			"convert",
+			"--from",
+			"-#format=binpb",
+			"--to",
+			"-#format=protoscope",
+		)
+		assert.Contains(t, decodedMessage.String(), "1: 55")
+	})
 	t.Run("file output and input", func(t *testing.T) {
 		t.Parallel()
 		stdin := bytes.NewBufferString(`{"one":"55"}`)

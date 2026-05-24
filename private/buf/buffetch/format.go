@@ -35,6 +35,8 @@ const (
 	formatZip = "zip"
 	// formatProtoFile is the proto file format.
 	formatProtoFile = "protofile"
+	// formatProtoscope is the protoscope format.
+	formatProtoscope = "protoscope"
 
 	// formatBin is the binary format's old form, now deprecated.
 	formatBin = "bin"
@@ -54,6 +56,7 @@ var (
 		formatBingz,
 		formatJSON,
 		formatJSONGZ,
+		formatProtoscope,
 		formatTxtpb,
 		formatYAML,
 	}
@@ -61,6 +64,7 @@ var (
 	messageFormatsNotDeprecated = []string{
 		formatBinpb,
 		formatJSON,
+		formatProtoscope,
 		formatTxtpb,
 		formatYAML,
 	}
@@ -134,6 +138,7 @@ var (
 		formatJSONGZ,
 		formatMod,
 		formatProtoFile,
+		formatProtoscope,
 		formatTar,
 		formatTargz,
 		formatTxtpb,
@@ -148,6 +153,7 @@ var (
 		formatJSON,
 		formatMod,
 		formatProtoFile,
+		formatProtoscope,
 		formatTar,
 		formatTxtpb,
 		formatYAML,
@@ -161,9 +167,10 @@ var (
 	}
 
 	messageEncodingToFormat = map[MessageEncoding]string{
-		MessageEncodingBinpb: formatBinpb,
-		MessageEncodingJSON:  formatJSON,
-		MessageEncodingTxtpb: formatTxtpb,
-		MessageEncodingYAML:  formatYAML,
+		MessageEncodingBinpb:      formatBinpb,
+		MessageEncodingJSON:       formatJSON,
+		MessageEncodingTxtpb:      formatTxtpb,
+		MessageEncodingYAML:       formatYAML,
+		MessageEncodingProtoscope: formatProtoscope,
 	}
 )

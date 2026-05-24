@@ -178,6 +178,13 @@ func run(
 	if err != nil {
 		return err
 	}
+	if flags.Type == "" {
+		return controller.Convert(
+			ctx,
+			flags.From,
+			flags.To,
+		)
+	}
 	schemaImage, schemaImageErr := controller.GetImage(
 		ctx,
 		input,
@@ -261,6 +268,8 @@ func inverseEncoding(encoding buffetch.MessageEncoding) (buffetch.MessageEncodin
 	case buffetch.MessageEncodingTxtpb:
 		return buffetch.MessageEncodingBinpb, nil
 	case buffetch.MessageEncodingYAML:
+		return buffetch.MessageEncodingBinpb, nil
+	case buffetch.MessageEncodingProtoscope:
 		return buffetch.MessageEncodingBinpb, nil
 	default:
 		return 0, fmt.Errorf("unknown message encoding %v", encoding)

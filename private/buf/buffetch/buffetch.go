@@ -42,6 +42,8 @@ const (
 	MessageEncodingTxtpb
 	// MessageEncodingYAML is the YAML message encoding.
 	MessageEncodingYAML
+	// MessageEncodingProtoscope is the protoscope message encoding.
+	MessageEncodingProtoscope
 
 	useProtoNamesKey  = "use_proto_names"
 	useEnumNumbersKey = "use_enum_numbers"

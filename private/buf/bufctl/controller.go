@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"slices"
 	"sort"
+	"strings"
 
 	"buf.build/go/app"
 	"buf.build/go/app/appcmd"
@@ -53,6 +54,7 @@ import (
 	"github.com/bufbuild/buf/private/pkg/storage/storageos"
 	"github.com/bufbuild/buf/private/pkg/syserror"
 	"github.com/bufbuild/buf/private/pkg/wasm"
+	"github.com/bufbuild/protocompile/experimental/protoscope"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -143,6 +145,12 @@ type Controller interface {
 		messageOutput string,
 		message proto.Message,
 		defaultMessageEncoding buffetch.MessageEncoding,
+		options ...FunctionOption,
+	) error
+	Convert(
+		ctx context.Context,
+		messageInput string,
+		messageOutput string,
 		options ...FunctionOption,
 	) error
 	// GetCheckClientForWorkspace returns a new bufcheck Client for the given Workspace.
@@ -759,6 +767,7 @@ func (c *controller) GetMessage(
 		}
 		validator = yamlValidator{protovalidateValidator}
 	}
+	var isProtoscope bool
 	var unmarshaler protoencoding.Unmarshaler
 	switch messageEncoding {
 	case buffetch.MessageEncodingBinpb:
@@ -775,6 +784,9 @@ func (c *controller) GetMessage(
 			protoencoding.YAMLUnmarshalerWithValidator(validator),
 		)
 		validator = nil // Validation errors are handled by the unmarshaler.
+	case buffetch.MessageEncodingProtoscope:
+		isProtoscope = true
+		unmarshaler = protoencoding.NewWireUnmarshaler(schemaImage.Resolver())
 	default:
 		// This is a system error.
 		return nil, 0, syserror.Newf("unknown MessageEncoding: %v", messageEncoding)
@@ -786,6 +798,19 @@ func (c *controller) GetMessage(
 	data, err := xio.ReadAllAndClose(readCloser)
 	if err != nil {
 		return nil, 0, err
+	}
+	if isProtoscope {
+		binaryBytes, diags := protoscope.Assemble(messageRef.Path(), data)
+		var errMsgs []string
+		for _, d := range diags {
+			if d.Level == protoscope.SeverityError {
+				errMsgs = append(errMsgs, fmt.Sprintf("%s:%d:%d: %s", messageRef.Path(), d.Range.Start.Line, d.Range.Start.Column, d.Message))
+			}
+		}
+		if len(errMsgs) > 0 {
+			return nil, 0, fmt.Errorf("protoscope assembly failed:\n%s", strings.Join(errMsgs, "\n"))
+		}
+		data = binaryBytes
 	}
 	message, err := bufreflect.NewMessage(ctx, schemaImage, typeName)
 	if err != nil {
@@ -1492,10 +1517,26 @@ func newProtoencodingMarshaler(
 		return protoencoding.NewTxtpbMarshaler(image.Resolver()), nil
 	case buffetch.MessageEncodingYAML:
 		return newYAMLMarshaler(image.Resolver(), messageRef), nil
+	case buffetch.MessageEncodingProtoscope:
+		return &protoscopeMarshaler{}, nil
 	default:
 		// This is a system error.
 		return nil, syserror.Newf("unknown MessageEncoding: %v", messageEncoding)
 	}
+}
+
+type protoscopeMarshaler struct{}
+
+func (m *protoscopeMarshaler) Marshal(message proto.Message) ([]byte, error) {
+	binaryBytes, err := protoencoding.NewWireMarshaler().Marshal(message)
+	if err != nil {
+		return nil, err
+	}
+	text, err := protoscope.Disassemble(binaryBytes, protoscope.DisassembleOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return []byte(text), nil
 }
 
 func newJSONMarshaler(
@@ -1670,4 +1711,79 @@ func newStaticPolicyPluginDataProviderForPolicyConfigs(
 		policyNameToPluginDataProvider[policyName] = pluginDataProvider
 	}
 	return bufpolicy.NewStaticPolicyPluginDataProvider(policyNameToPluginDataProvider)
+}
+
+func (c *controller) Convert(
+	ctx context.Context,
+	messageInput string,
+	messageOutput string,
+	options ...FunctionOption,
+) (retErr error) {
+	defer c.handleFileAnnotationSetRetError(&retErr)
+	functionOptions := newFunctionOptions(c)
+	for _, option := range options {
+		option(functionOptions)
+	}
+	messageRefParser := buffetch.NewMessageRefParser(
+		c.logger,
+		buffetch.MessageRefParserWithDefaultMessageEncoding(buffetch.MessageEncodingBinpb),
+	)
+	messageInputRef, err := messageRefParser.GetMessageRef(ctx, messageInput)
+	if err != nil {
+		return err
+	}
+	messageOutputRef, err := messageRefParser.GetMessageRef(ctx, messageOutput)
+	if err != nil {
+		return err
+	}
+
+	fromEncoding := messageInputRef.MessageEncoding()
+	toEncoding := messageOutputRef.MessageEncoding()
+
+	if !(fromEncoding == buffetch.MessageEncodingBinpb || fromEncoding == buffetch.MessageEncodingProtoscope) {
+		return fmt.Errorf("schemaless convert only supports binary or protoscope input format, got encoding: %v", fromEncoding)
+	}
+	if !(toEncoding == buffetch.MessageEncodingBinpb || toEncoding == buffetch.MessageEncodingProtoscope) {
+		return fmt.Errorf("schemaless convert only supports binary or protoscope output format, got encoding: %v", toEncoding)
+	}
+
+	readCloser, err := c.buffetchReader.GetMessageFile(ctx, c.container, messageInputRef)
+	if err != nil {
+		return err
+	}
+	data, err := xio.ReadAllAndClose(readCloser)
+	if err != nil {
+		return err
+	}
+
+	var outputData []byte
+	if fromEncoding == buffetch.MessageEncodingProtoscope && toEncoding == buffetch.MessageEncodingBinpb {
+		binaryBytes, diags := protoscope.Assemble(messageInputRef.Path(), data)
+		var errMsgs []string
+		for _, d := range diags {
+			if d.Level == protoscope.SeverityError {
+				errMsgs = append(errMsgs, fmt.Sprintf("%s:%d:%d: %s", messageInputRef.Path(), d.Range.Start.Line, d.Range.Start.Column, d.Message))
+			}
+		}
+		if len(errMsgs) > 0 {
+			return fmt.Errorf("protoscope assembly failed:\n%s", strings.Join(errMsgs, "\n"))
+		}
+		outputData = binaryBytes
+	} else if fromEncoding == buffetch.MessageEncodingBinpb && toEncoding == buffetch.MessageEncodingProtoscope {
+		text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{})
+		if err != nil {
+			return err
+		}
+		outputData = []byte(text)
+	} else {
+		// Both same: just copy
+		outputData = data
+	}
+
+	writeCloser, err := c.buffetchWriter.PutMessageFile(ctx, c.container, messageOutputRef)
+	if err != nil {
+		return err
+	}
+	_, err = writeCloser.Write(outputData)
+	return errors.Join(err, writeCloser.Close())
 }
