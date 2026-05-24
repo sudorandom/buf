@@ -731,16 +731,65 @@ func (s *server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 		}
 		return nil, nil
 	case commandDisassembleProtoscope:
-		res, err := s.protoscopeManager.ExecuteDisassemble(ctx, uri)
+		var variant *string
+		if len(params.Arguments) > 1 {
+			if v, ok := params.Arguments[1].(string); ok && v != "" {
+				variant = &v
+			}
+		}
+		res, err := s.protoscopeManager.ExecuteDisassemble(ctx, uri, variant)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", params.Command, err)
 		}
 		return res, nil
 	case commandAssembleProtoscope:
-		res, err := s.protoscopeManager.ExecuteAssemble(ctx, uri)
+		s.logger.Debug(
+			"commandAssembleProtoscope invoked",
+			"argsCount", len(params.Arguments),
+		)
+		if len(params.Arguments) > 0 {
+			s.logger.Debug("commandAssembleProtoscope argument 0 (uri)", "uri", params.Arguments[0])
+		}
+		var selectedText *string
+		if len(params.Arguments) > 1 {
+			arg := params.Arguments[1]
+			if arg == nil {
+				s.logger.Debug("commandAssembleProtoscope argument 1 (selectedText) is nil")
+			} else {
+				s.logger.Debug("commandAssembleProtoscope argument 1 (selectedText) type", "type", fmt.Sprintf("%T", arg))
+				if t, ok := arg.(string); ok {
+					s.logger.Debug("commandAssembleProtoscope argument 1 (selectedText) value length", "length", len(t))
+					if t != "" {
+						selectedText = &t
+					}
+				} else {
+					s.logger.Warn("commandAssembleProtoscope argument 1 (selectedText) is not a string", "value", arg)
+				}
+			}
+		}
+		var variant *string
+		if len(params.Arguments) > 2 {
+			arg := params.Arguments[2]
+			if arg == nil {
+				s.logger.Debug("commandAssembleProtoscope argument 2 (variant) is nil")
+			} else {
+				s.logger.Debug("commandAssembleProtoscope argument 2 (variant) type", "type", fmt.Sprintf("%T", arg))
+				if v, ok := arg.(string); ok {
+					s.logger.Debug("commandAssembleProtoscope argument 2 (variant) value", "value", v)
+					if v != "" {
+						variant = &v
+					}
+				} else {
+					s.logger.Warn("commandAssembleProtoscope argument 2 (variant) is not a string", "value", arg)
+				}
+			}
+		}
+		res, err := s.protoscopeManager.ExecuteAssemble(ctx, uri, selectedText, variant)
 		if err != nil {
+			s.logger.Error("commandAssembleProtoscope ExecuteAssemble failed", "error", err)
 			return nil, fmt.Errorf("%s: %w", params.Command, err)
 		}
+		s.logger.Debug("commandAssembleProtoscope ExecuteAssemble succeeded", "responseLength", len(res))
 		return res, nil
 	default:
 		return nil, fmt.Errorf("unknown command: %q", params.Command)

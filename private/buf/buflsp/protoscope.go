@@ -295,13 +295,17 @@ func convertProtoscopeDocumentSymbols(symbols []protoscope.DocumentSymbol) []pro
 const commandDisassembleProtoscope = "buf.protoscope.disassemble.server"
 
 // ExecuteDisassemble reads the binary file at the given URI and disassembles it to protoscope text format.
-func (m *protoscopeManager) ExecuteDisassemble(ctx context.Context, uri protocol.URI) (string, error) {
+func (m *protoscopeManager) ExecuteDisassemble(ctx context.Context, uri protocol.URI, variantOpt *string) (string, error) {
 	filename := safeFilename(uri)
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return "", err
 	}
-	return protoscope.Disassemble(data, protoscope.DisassembleOptions{})
+	opts := protoscope.DisassembleOptions{}
+	if variantOpt != nil {
+		opts.Variant = *variantOpt
+	}
+	return protoscope.Disassemble(data, opts)
 }
 
 // commandAssembleProtoscope is the command to assemble protoscope text format to binary.
@@ -309,12 +313,17 @@ const commandAssembleProtoscope = "buf.protoscope.assemble.server"
 
 // ExecuteAssemble reads the protoscope file (either from the tracker or from disk)
 // and compiles it to a binary protobuf file. Returns the binary content encoded as a base64 string.
-func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.URI) (string, error) {
+func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.URI, textOpt *string, variantOpt *string) (string, error) {
 	var text string
-	if file, ok := m.Get(uri); ok {
+	if textOpt != nil {
+		m.lsp.logger.Info("ExecuteAssemble: using provided selection textOpt", "length", len(*textOpt))
+		text = *textOpt
+	} else if file, ok := m.Get(uri); ok {
+		m.lsp.logger.Info("ExecuteAssemble: using text from protoscopeManager tracker", "length", len(file.text))
 		text = file.text
 	} else {
 		filename := safeFilename(uri)
+		m.lsp.logger.Info("ExecuteAssemble: reading from file system", "filename", filename)
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			return "", err
@@ -322,7 +331,12 @@ func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.UR
 		text = string(data)
 	}
 
-	binary, diags := protoscope.Assemble(safeFilename(uri), []byte(text))
+	opts := protoscope.AssembleOptions{}
+	if variantOpt != nil {
+		m.lsp.logger.Info("ExecuteAssemble: using variant option", "variant", *variantOpt)
+		opts.Variant = *variantOpt
+	}
+	binary, diags := protoscope.AssembleWithOptions(safeFilename(uri), []byte(text), opts)
 	var hasError bool
 	var errorMessages []string
 	for _, d := range diags {
