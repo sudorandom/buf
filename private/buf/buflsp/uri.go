@@ -99,4 +99,3 @@ func safeFilename(u protocol.URI) string {
 func isProtoscopeURI(uri protocol.URI) bool {
 	return strings.HasSuffix(strings.ToLower(safeFilename(uri)), ".protoscope")
 }
-

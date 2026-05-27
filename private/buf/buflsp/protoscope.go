@@ -128,11 +128,11 @@ func (m *protoscopeManager) GetHover(ctx context.Context, uri protocol.URI, pos 
 		return nil, nil
 	}
 
-	// protoscope.Hover expects 1-indexed line and column
+	// protoscope.Inspect expects 1-indexed line and column
 	line := int(pos.Line) + 1
 	col := int(pos.Character) + 1
 
-	h, err := protoscope.Hover(safeFilename(uri), []byte(file.text), line, col)
+	h, err := protoscope.Inspect(safeFilename(uri), []byte(file.text), line, col)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +144,77 @@ func (m *protoscopeManager) GetHover(ctx context.Context, uri protocol.URI, pos 
 	return &protocol.Hover{
 		Contents: protocol.MarkupContent{
 			Kind:  protocol.Markdown,
-			Value: h.Text,
+			Value: formatProtoscopeHover(h),
 		},
 		Range: &rangeVal,
 	}, nil
+}
+
+func formatProtoscopeHover(h *protoscope.InspectInfo) string {
+	if h == nil {
+		return ""
+	}
+	var sb strings.Builder
+	switch h.Kind {
+	case protoscope.InspectKindField:
+		if h.Field == nil {
+			return ""
+		}
+		sb.WriteString("### Field Tag\n")
+		fmt.Fprintf(&sb, "- **Field Number:** `%s`\n", h.Field.Tag)
+		if h.Field.WireType != "" {
+			fmt.Fprintf(&sb, "- **Wire Type:** `%s`\n", h.Field.WireType)
+		}
+	case protoscope.InspectKindLiteral:
+		if h.Literal == nil {
+			return ""
+		}
+		sb.WriteString("### Literal Value\n")
+		if h.Literal.Type == "Number" {
+			fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", h.Literal.RawText)
+			fmt.Fprintf(&sb, "- **Type:** `Number` (suffix: `%s`)\n", h.Literal.Suffix)
+			if h.Literal.HasInt {
+				fmt.Fprintf(&sb, "- **Decimal:** `%d`\n", h.Literal.IntValue)
+				fmt.Fprintf(&sb, "- **Hexadecimal:** `0x%X`\n", h.Literal.IntValue)
+				fmt.Fprintf(&sb, "- **Binary:** `0b%b`\n", h.Literal.IntValue)
+				fmt.Fprintf(&sb, "- **As Varint Bytes:** `%s`\n", h.Literal.VarintBytes)
+				fmt.Fprintf(&sb, "- **Zigzag Encoded:** `%d`\n", h.Literal.Zigzag)
+			} else if h.Literal.HasFloat {
+				fmt.Fprintf(&sb, "- **Floating Point:** `%g`\n", h.Literal.FloatValue)
+			}
+		} else if h.Literal.Type == "String" {
+			if h.Literal.IsHexHexQuote {
+				fmt.Fprintf(&sb, "- **Raw Hex:** `%s`\n", h.Literal.RawText)
+			} else {
+				fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", h.Literal.RawText)
+			}
+			sb.WriteString("- **Type:** `String`\n")
+			if h.Literal.IsHexHexQuote {
+				fmt.Fprintf(&sb, "- **Hex Length:** `%d bytes`\n", h.Literal.HexLength)
+				if h.Literal.DecodedText != "" {
+					fmt.Fprintf(&sb, "- **Decoded Text:** `%s`\n", h.Literal.DecodedText)
+				}
+			} else {
+				if h.Literal.ByteLength == h.Literal.CharLength {
+					fmt.Fprintf(&sb, "- **Length:** `%d bytes`\n", h.Literal.ByteLength)
+				} else {
+					fmt.Fprintf(&sb, "- **Length:** `%d bytes` (`%d characters`)\n", h.Literal.ByteLength, h.Literal.CharLength)
+				}
+			}
+		}
+	case protoscope.InspectKindBlock:
+		if h.Block == nil {
+			return ""
+		}
+		if h.Block.Name == "!{" {
+			sb.WriteString("### Group Block\n")
+			sb.WriteString("Represents a deprecated Protobuf Group wire format structure (`!{ ... }`).")
+		} else {
+			sb.WriteString("### Length-Prefixed Block\n")
+			sb.WriteString("Represents a length-delimited payload (`{ ... }`), such as a submessage, packed repeated field, or raw string/bytes.")
+		}
+	}
+	return sb.String()
 }
 
 // GetDocumentSymbols retrieves the symbols within a protoscope file.
