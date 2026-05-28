@@ -22,6 +22,7 @@ import (
 
 	"buf.build/go/app"
 	"github.com/bufbuild/buf/private/buf/buffetch/internal"
+	"github.com/bufbuild/buf/private/bufpkg/bufconfig"
 	"github.com/bufbuild/buf/private/pkg/slogtestext"
 	"github.com/bufbuild/buf/private/pkg/storage/storageos"
 	"github.com/stretchr/testify/require"
@@ -147,4 +148,16 @@ func testNewFetchWriter(logger *slog.Logger) internal.Writer {
 		logger,
 		internal.WithWriterLocal(),
 	)
+}
+
+func TestGetInputConfigForString(t *testing.T) {
+	t.Parallel()
+	logger := slogtestext.NewLogger(t)
+	refParser := NewRefParser(logger)
+	ctx := t.Context()
+
+	config, err := GetInputConfigForString(ctx, refParser, "file.protoscope")
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.Equal(t, bufconfig.InputConfigTypeProtoscopeImage, config.Type())
 }

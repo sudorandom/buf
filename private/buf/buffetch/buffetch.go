@@ -573,6 +573,11 @@ func GetInputConfigForString(
 				t.Path(),
 				t.internalSingleRef().CompressionType().String(),
 			)
+		case MessageEncodingProtoscope:
+			return bufconfig.NewProtoscopeImageInputConfig(
+				t.Path(),
+				t.internalSingleRef().CompressionType().String(),
+			)
 		default:
 			return nil, fmt.Errorf("unknown encoding: %v", t.MessageEncoding())
 		}

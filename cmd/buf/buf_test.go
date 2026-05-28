@@ -4606,6 +4606,23 @@ func TestConvertRoundTrip(t *testing.T) {
 		)
 		assert.Contains(t, decodedMessage.String(), "1: 55")
 	})
+	t.Run("stdin and stdout protoscope schemaless variant to variant conversion", func(t *testing.T) {
+		t.Parallel()
+		stdin := bytes.NewBuffer([]byte{0x00, 0x00, 0x00, 0x00, 0x02, 0x08, 0x37})
+		encodedMessage := bytes.NewBuffer(nil)
+		testRun(
+			t,
+			0,
+			stdin,
+			encodedMessage,
+			"convert",
+			"--from",
+			"-#format=binpb,variant=grpc",
+			"--to",
+			"-#format=binpb,variant=varint",
+		)
+		assert.Equal(t, []byte{0x02, 0x08, 0x37}, encodedMessage.Bytes())
+	})
 	t.Run("file output and input", func(t *testing.T) {
 		t.Parallel()
 		stdin := bytes.NewBufferString(`{"one":"55"}`)

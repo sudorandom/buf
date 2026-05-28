@@ -1830,6 +1830,22 @@ func (c *controller) Convert(
 			return err
 		}
 		outputData = []byte(text)
+	} else if fromEncoding == buffetch.MessageEncodingBinpb && toEncoding == buffetch.MessageEncodingBinpb && fromVariant != toVariant {
+		text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{Variant: fromVariant})
+		if err != nil {
+			return err
+		}
+		binaryBytes, diags := protoscope.AssembleWithOptions(messageInputRef.Path(), []byte(text), protoscope.AssembleOptions{Variant: toVariant})
+		var errMsgs []string
+		for _, d := range diags {
+			if d.Level == protoscope.SeverityError {
+				errMsgs = append(errMsgs, fmt.Sprintf("%s:%d:%d: %s", messageInputRef.Path(), d.Range.Start.Line, d.Range.Start.Column, d.Message))
+			}
+		}
+		if len(errMsgs) > 0 {
+			return fmt.Errorf("protoscope assembly failed:\n%s", strings.Join(errMsgs, "\n"))
+		}
+		outputData = binaryBytes
 	} else {
 		// Both same: just copy
 		outputData = data

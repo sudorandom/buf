@@ -116,7 +116,7 @@ func (m *protoscopeManager) checkAndPublishDiagnostics(ctx context.Context, uri 
 
 	_ = m.lsp.client.PublishDiagnostics(ctx, &protocol.PublishDiagnosticsParams{
 		URI:         uri,
-		Version:     uint32(version),
+		Version:     int32ToUint32(version),
 		Diagnostics: protocolDiags,
 	})
 }
@@ -170,7 +170,8 @@ func formatProtoscopeHover(h *protoscope.InspectInfo) string {
 			return ""
 		}
 		sb.WriteString("### Literal Value\n")
-		if h.Literal.Type == "Number" {
+		switch h.Literal.Type {
+		case "Number":
 			fmt.Fprintf(&sb, "- **Raw Text:** `%s`\n", h.Literal.RawText)
 			fmt.Fprintf(&sb, "- **Type:** `Number` (suffix: `%s`)\n", h.Literal.Suffix)
 			if h.Literal.HasInt {
@@ -182,7 +183,7 @@ func formatProtoscopeHover(h *protoscope.InspectInfo) string {
 			} else if h.Literal.HasFloat {
 				fmt.Fprintf(&sb, "- **Floating Point:** `%g`\n", h.Literal.FloatValue)
 			}
-		} else if h.Literal.Type == "String" {
+		case "String":
 			if h.Literal.IsHexHexQuote {
 				fmt.Fprintf(&sb, "- **Raw Hex:** `%s`\n", h.Literal.RawText)
 			} else {
@@ -284,8 +285,8 @@ func (m *protoscopeManager) Formatting(ctx context.Context, uri protocol.URI) ([
 					Character: 0,
 				},
 				End: protocol.Position{
-					Line:      uint32(endLine),
-					Character: uint32(endCharacter),
+					Line:      intToUint32(endLine),
+					Character: intToUint32(endCharacter),
 				},
 			},
 			NewText: newText,
@@ -297,19 +298,19 @@ func (m *protoscopeManager) Formatting(ctx context.Context, uri protocol.URI) ([
 func protoscopeRangeToProtocolRange(r protoscope.Range) protocol.Range {
 	startLine := uint32(0)
 	if r.Start.Line > 0 {
-		startLine = uint32(r.Start.Line - 1)
+		startLine = intToUint32(r.Start.Line - 1)
 	}
 	startCol := uint32(0)
 	if r.Start.Column > 0 {
-		startCol = uint32(r.Start.Column - 1)
+		startCol = intToUint32(r.Start.Column - 1)
 	}
 	endLine := uint32(0)
 	if r.End.Line > 0 {
-		endLine = uint32(r.End.Line - 1)
+		endLine = intToUint32(r.End.Line - 1)
 	}
 	endCol := uint32(0)
 	if r.End.Column > 0 {
-		endCol = uint32(r.End.Column - 1)
+		endCol = intToUint32(r.End.Column - 1)
 	}
 
 	return protocol.Range{
@@ -417,4 +418,18 @@ func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.UR
 	}
 
 	return base64.StdEncoding.EncodeToString(binary), nil
+}
+
+func int32ToUint32(v int32) uint32 {
+	if v < 0 {
+		return 0
+	}
+	return uint32(v)
+}
+
+func intToUint32(v int) uint32 {
+	if v < 0 {
+		return 0
+	}
+	return uint32(v)
 }

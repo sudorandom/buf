@@ -48,6 +48,8 @@ const (
 	InputConfigTypeTextImage
 	// InputConfigTypeYAMLImage is the yaml image input type.
 	InputConfigTypeYAMLImage
+	// InputConfigTypeProtoscopeImage is the protoscope image input type.
+	InputConfigTypeProtoscopeImage
 )
 
 // String implements fmt.Stringer.
@@ -109,6 +111,9 @@ var (
 		InputConfigTypeYAMLImage: {
 			compressionKey: {},
 		},
+		InputConfigTypeProtoscopeImage: {
+			compressionKey: {},
+		},
 	}
 	inputConfigTypeToString = map[InputConfigType]string{
 		InputConfigTypeGitRepo:     "git_repo",
@@ -121,6 +126,7 @@ var (
 		InputConfigTypeJSONImage:   "json_image",
 		InputConfigTypeTextImage:   "text_image",
 		InputConfigTypeYAMLImage:   "yaml_image",
+		InputConfigTypeProtoscopeImage: "protoscope_image",
 	}
 	allInputConfigTypeString = xstrings.SliceToHumanString(
 		xslices.MapValuesToSortedSlice(inputConfigTypeToString),
@@ -334,6 +340,21 @@ func NewYAMLImageInputConfig(
 	}, nil
 }
 
+// NewProtoscopeImageInputConfig returns an input config for a protoscope image.
+func NewProtoscopeImageInputConfig(
+	location string,
+	compression string,
+) (InputConfig, error) {
+	if location == "" {
+		return nil, errors.New("empty location for protoscope image")
+	}
+	return &inputConfig{
+		inputConfigType: InputConfigTypeProtoscopeImage,
+		location:        location,
+		compression:     compression,
+	}, nil
+}
+
 // *** PRIVATE ***
 
 type inputConfig struct {
@@ -393,6 +414,10 @@ func newInputConfigFromExternalV2(externalConfig externalInputConfigV2) (InputCo
 	if externalConfig.YAMLImage != nil {
 		inputConfigTypes = append(inputConfigTypes, InputConfigTypeYAMLImage)
 		inputConfig.location = *externalConfig.YAMLImage
+	}
+	if externalConfig.ProtoscopeImage != nil {
+		inputConfigTypes = append(inputConfigTypes, InputConfigTypeProtoscopeImage)
+		inputConfig.location = *externalConfig.ProtoscopeImage
 	}
 	if externalConfig.GitRepo != nil {
 		inputConfigTypes = append(inputConfigTypes, InputConfigTypeGitRepo)
@@ -555,6 +580,8 @@ func newExternalInputConfigV2FromInputConfig(
 		externalInputConfigV2.TextImage = toPointer(inputConfig.Location())
 	case InputConfigTypeYAMLImage:
 		externalInputConfigV2.YAMLImage = toPointer(inputConfig.Location())
+	case InputConfigTypeProtoscopeImage:
+		externalInputConfigV2.ProtoscopeImage = toPointer(inputConfig.Location())
 	default:
 		return externalInputConfigV2, syserror.Newf("unknown input config type: %v", inputConfig.Type())
 	}

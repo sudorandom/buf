@@ -38,7 +38,7 @@ func TestProtoscopeDiagnostics(t *testing.T) {
   3: "hello"
 }
 `
-		err := os.WriteFile(filePath, []byte(content), 0644)
+		err := os.WriteFile(filePath, []byte(content), 0600)
 		require.NoError(t, err)
 
 		_, testURI, capture := setupLSPServerWithDiagnostics(t, filePath)
@@ -57,7 +57,7 @@ func TestProtoscopeDiagnostics(t *testing.T) {
 		content := `1: 
 2: {
 `
-		err := os.WriteFile(filePath, []byte(content), 0644)
+		err := os.WriteFile(filePath, []byte(content), 0600)
 		require.NoError(t, err)
 
 		_, testURI, capture := setupLSPServerWithDiagnostics(t, filePath)
@@ -82,7 +82,7 @@ func TestProtoscopeHover(t *testing.T) {
   3: ` + "`" + `01 02 03` + "`" + `
 }
 `
-	err := os.WriteFile(filePath, []byte(content), 0644)
+	err := os.WriteFile(filePath, []byte(content), 0600)
 	require.NoError(t, err)
 
 	clientJSONConn, testURI := setupLSPServer(t, filePath)
@@ -135,7 +135,7 @@ func TestProtoscopeDocumentSymbol(t *testing.T) {
   3: "hello"
 }
 `
-	err := os.WriteFile(filePath, []byte(content), 0644)
+	err := os.WriteFile(filePath, []byte(content), 0600)
 	require.NoError(t, err)
 
 	clientJSONConn, testURI := setupLSPServer(t, filePath)
@@ -182,7 +182,7 @@ func TestProtoscopeFormatting(t *testing.T) {
 2:{
   3:"hello"
 }`
-		err := os.WriteFile(filePath, []byte(content), 0644)
+		err := os.WriteFile(filePath, []byte(content), 0600)
 		require.NoError(t, err)
 
 		clientJSONConn, testURI := setupLSPServer(t, filePath)
@@ -208,7 +208,7 @@ func TestProtoscopeFormatting(t *testing.T) {
 		content := `1: 
 2: {
 `
-		err := os.WriteFile(filePath, []byte(content), 0644)
+		err := os.WriteFile(filePath, []byte(content), 0600)
 		require.NoError(t, err)
 
 		clientJSONConn, testURI := setupLSPServer(t, filePath)
@@ -232,7 +232,7 @@ func TestProtoscopeDisassembleCommand(t *testing.T) {
 	filePath := filepath.Join(tempDir, "test.bin")
 	// Protobuf binary with field 1 = 150 (varint)
 	binaryData := []byte{0x08, 0x96, 0x01}
-	err := os.WriteFile(filePath, binaryData, 0644)
+	err := os.WriteFile(filePath, binaryData, 0600)
 	require.NoError(t, err)
 
 	clientJSONConn, testURI := setupLSPServer(t, filePath)
@@ -253,7 +253,7 @@ func TestProtoscopeAssembleCommand(t *testing.T) {
 	tempDir := t.TempDir()
 	filePath := filepath.Join(tempDir, "test.protoscope")
 	content := "1: 150\n"
-	err := os.WriteFile(filePath, []byte(content), 0644)
+	err := os.WriteFile(filePath, []byte(content), 0600)
 	require.NoError(t, err)
 
 	clientJSONConn, testURI := setupLSPServer(t, filePath)
@@ -279,7 +279,7 @@ func TestProtoscopeAssembleCommandError(t *testing.T) {
 	content := `1:
 2: {
 `
-	err := os.WriteFile(filePath, []byte(content), 0644)
+	err := os.WriteFile(filePath, []byte(content), 0600)
 	require.NoError(t, err)
 
 	clientJSONConn, testURI := setupLSPServer(t, filePath)
@@ -298,7 +298,7 @@ func TestProtoscopeUntitled(t *testing.T) {
 
 	tempDir := t.TempDir()
 	dummyPath := filepath.Join(tempDir, "dummy.proto")
-	err := os.WriteFile(dummyPath, []byte("syntax = \"proto3\";"), 0644)
+	err := os.WriteFile(dummyPath, []byte("syntax = \"proto3\";"), 0600)
 	require.NoError(t, err)
 
 	clientJSONConn, _ := setupLSPServer(t, dummyPath)

@@ -235,6 +235,8 @@ func (a *refParser) getRawRefForInputConfig(
 		rawRef.Format = "txtpb"
 	case bufconfig.InputConfigTypeYAMLImage:
 		rawRef.Format = "yaml"
+	case bufconfig.InputConfigTypeProtoscopeImage:
+		rawRef.Format = "protoscope"
 	default:
 		return nil, syserror.Newf("unknown InputConfigType: %v", inputConfig.Type())
 	}
