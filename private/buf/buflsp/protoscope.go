@@ -363,15 +363,19 @@ func convertProtoscopeDocumentSymbols(symbols []protoscope.DocumentSymbol) []pro
 const commandDisassembleProtoscope = "buf.protoscope.disassemble.server"
 
 // ExecuteDisassemble reads the binary file at the given URI and disassembles it to protoscope text format.
-func (m *protoscopeManager) ExecuteDisassemble(ctx context.Context, uri protocol.URI, variantOpt *string) (string, error) {
+func (m *protoscopeManager) ExecuteDisassemble(ctx context.Context, uri protocol.URI, framingOpt *string) (string, error) {
 	filename := safeFilename(uri)
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return "", err
 	}
 	opts := protoscope.DisassembleOptions{}
-	if variantOpt != nil {
-		opts.Variant = *variantOpt
+	if framingOpt != nil {
+		framing, err := protoscope.ParseFraming(*framingOpt)
+		if err != nil {
+			return "", err
+		}
+		opts.Framing = framing
 	}
 	return protoscope.Disassemble(data, opts)
 }
@@ -381,7 +385,7 @@ const commandAssembleProtoscope = "buf.protoscope.assemble.server"
 
 // ExecuteAssemble reads the protoscope file (either from the tracker or from disk)
 // and compiles it to a binary protobuf file. Returns the binary content encoded as a base64 string.
-func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.URI, textOpt *string, variantOpt *string) (string, error) {
+func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.URI, textOpt *string, framingOpt *string) (string, error) {
 	var text string
 	if textOpt != nil {
 		m.lsp.logger.Info("ExecuteAssemble: using provided selection textOpt", "length", len(*textOpt))
@@ -400,9 +404,13 @@ func (m *protoscopeManager) ExecuteAssemble(ctx context.Context, uri protocol.UR
 	}
 
 	opts := protoscope.AssembleOptions{}
-	if variantOpt != nil {
-		m.lsp.logger.Info("ExecuteAssemble: using variant option", "variant", *variantOpt)
-		opts.Variant = *variantOpt
+	if framingOpt != nil {
+		m.lsp.logger.Info("ExecuteAssemble: using framing option", "framing", *framingOpt)
+		framing, err := protoscope.ParseFraming(*framingOpt)
+		if err != nil {
+			return "", err
+		}
+		opts.Framing = framing
 	}
 	binary, diags := protoscope.AssembleWithOptions(safeFilename(uri), []byte(text), opts)
 	var hasError bool

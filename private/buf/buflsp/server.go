@@ -731,13 +731,13 @@ func (s *server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 		}
 		return nil, nil
 	case commandDisassembleProtoscope:
-		var variant *string
+		var framing *string
 		if len(params.Arguments) > 1 {
 			if v, ok := params.Arguments[1].(string); ok && v != "" {
-				variant = &v
+				framing = &v
 			}
 		}
-		res, err := s.protoscopeManager.ExecuteDisassemble(ctx, uri, variant)
+		res, err := s.protoscopeManager.ExecuteDisassemble(ctx, uri, framing)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", params.Command, err)
 		}
@@ -767,24 +767,24 @@ func (s *server) ExecuteCommand(ctx context.Context, params *protocol.ExecuteCom
 				}
 			}
 		}
-		var variant *string
+		var framing *string
 		if len(params.Arguments) > 2 {
 			arg := params.Arguments[2]
 			if arg == nil {
-				s.logger.Debug("commandAssembleProtoscope argument 2 (variant) is nil")
+				s.logger.Debug("commandAssembleProtoscope argument 2 (framing) is nil")
 			} else {
-				s.logger.Debug("commandAssembleProtoscope argument 2 (variant) type", "type", fmt.Sprintf("%T", arg))
+				s.logger.Debug("commandAssembleProtoscope argument 2 (framing) type", "type", fmt.Sprintf("%T", arg))
 				if v, ok := arg.(string); ok {
-					s.logger.Debug("commandAssembleProtoscope argument 2 (variant) value", "value", v)
+					s.logger.Debug("commandAssembleProtoscope argument 2 (framing) value", "value", v)
 					if v != "" {
-						variant = &v
+						framing = &v
 					}
 				} else {
-					s.logger.Warn("commandAssembleProtoscope argument 2 (variant) is not a string", "value", arg)
+					s.logger.Warn("commandAssembleProtoscope argument 2 (framing) is not a string", "value", arg)
 				}
 			}
 		}
-		res, err := s.protoscopeManager.ExecuteAssemble(ctx, uri, selectedText, variant)
+		res, err := s.protoscopeManager.ExecuteAssemble(ctx, uri, selectedText, framing)
 		if err != nil {
 			s.logger.Error("commandAssembleProtoscope ExecuteAssemble failed", "error", err)
 			return nil, fmt.Errorf("%s: %w", params.Command, err)

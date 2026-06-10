@@ -47,7 +47,7 @@ const (
 
 	useProtoNamesKey  = "use_proto_names"
 	useEnumNumbersKey = "use_enum_numbers"
-	variantKey        = "variant"
+	framingKey        = "framing"
 )
 
 var (

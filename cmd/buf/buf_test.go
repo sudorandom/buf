@@ -4476,7 +4476,7 @@ func TestConvertRoundTrip(t *testing.T) {
 		)
 		assert.JSONEq(t, `{"one":"55"}`, decodedMessage.String())
 	})
-	t.Run("grpc variant to json using schema", func(t *testing.T) {
+	t.Run("grpc framing to json using schema", func(t *testing.T) {
 		t.Parallel()
 		stdin := bytes.NewBuffer([]byte{0x00, 0x00, 0x00, 0x00, 0x02, 0x08, 0x37})
 		decodedMessage := bytes.NewBuffer(nil)
@@ -4490,13 +4490,13 @@ func TestConvertRoundTrip(t *testing.T) {
 			"--type",
 			"buf.Foo",
 			"--from",
-			"-#format=binpb,variant=grpc",
+			"-#format=binpb,framing=grpc",
 			"--to",
 			"-#format=json",
 		)
 		assert.JSONEq(t, `{"one":"55"}`, decodedMessage.String())
 	})
-	t.Run("json to grpc variant using schema", func(t *testing.T) {
+	t.Run("json to grpc framing using schema", func(t *testing.T) {
 		t.Parallel()
 		stdin := bytes.NewBufferString(`{"one":"55"}`)
 		encodedMessage := bytes.NewBuffer(nil)
@@ -4512,7 +4512,7 @@ func TestConvertRoundTrip(t *testing.T) {
 			"--from",
 			"-#format=json",
 			"--to",
-			"-#format=binpb,variant=grpc",
+			"-#format=binpb,framing=grpc",
 		)
 		assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00, 0x02, 0x08, 0x37}, encodedMessage.Bytes())
 	})
@@ -4546,7 +4546,7 @@ func TestConvertRoundTrip(t *testing.T) {
 		)
 		assert.Contains(t, decodedMessage.String(), "1: 55")
 	})
-	t.Run("stdin and stdout protoscope schemaless grpc variant roundtrip", func(t *testing.T) {
+	t.Run("stdin and stdout protoscope schemaless grpc framing roundtrip", func(t *testing.T) {
 		t.Parallel()
 		stdin := bytes.NewBufferString("1: 55\n")
 		encodedMessage := bytes.NewBuffer(nil)
@@ -4560,7 +4560,7 @@ func TestConvertRoundTrip(t *testing.T) {
 			"--from",
 			"-#format=protoscope",
 			"--to",
-			"-#format=binpb,variant=grpc",
+			"-#format=binpb,framing=grpc",
 		)
 		assert.Equal(t, []byte{0x00, 0x00, 0x00, 0x00, 0x02, 0x08, 0x37}, encodedMessage.Bytes())
 		testRun(
@@ -4570,13 +4570,13 @@ func TestConvertRoundTrip(t *testing.T) {
 			decodedMessage,
 			"convert",
 			"--from",
-			"-#format=binpb,variant=grpc",
+			"-#format=binpb,framing=grpc",
 			"--to",
 			"-#format=protoscope",
 		)
 		assert.Contains(t, decodedMessage.String(), "1: 55")
 	})
-	t.Run("stdin and stdout protoscope schemaless varint variant roundtrip", func(t *testing.T) {
+	t.Run("stdin and stdout protoscope schemaless varint framing roundtrip", func(t *testing.T) {
 		t.Parallel()
 		stdin := bytes.NewBufferString("1: 55\n")
 		encodedMessage := bytes.NewBuffer(nil)
@@ -4590,7 +4590,7 @@ func TestConvertRoundTrip(t *testing.T) {
 			"--from",
 			"-#format=protoscope",
 			"--to",
-			"-#format=binpb,variant=varint",
+			"-#format=binpb,framing=varint",
 		)
 		assert.Equal(t, []byte{0x02, 0x08, 0x37}, encodedMessage.Bytes())
 		testRun(
@@ -4600,13 +4600,13 @@ func TestConvertRoundTrip(t *testing.T) {
 			decodedMessage,
 			"convert",
 			"--from",
-			"-#format=binpb,variant=varint",
+			"-#format=binpb,framing=varint",
 			"--to",
 			"-#format=protoscope",
 		)
 		assert.Contains(t, decodedMessage.String(), "1: 55")
 	})
-	t.Run("stdin and stdout protoscope schemaless variant to variant conversion", func(t *testing.T) {
+	t.Run("stdin and stdout protoscope schemaless framing to framing conversion", func(t *testing.T) {
 		t.Parallel()
 		stdin := bytes.NewBuffer([]byte{0x00, 0x00, 0x00, 0x00, 0x02, 0x08, 0x37})
 		encodedMessage := bytes.NewBuffer(nil)
@@ -4617,9 +4617,9 @@ func TestConvertRoundTrip(t *testing.T) {
 			encodedMessage,
 			"convert",
 			"--from",
-			"-#format=binpb,variant=grpc",
+			"-#format=binpb,framing=grpc",
 			"--to",
-			"-#format=binpb,variant=varint",
+			"-#format=binpb,framing=varint",
 		)
 		assert.Equal(t, []byte{0x02, 0x08, 0x37}, encodedMessage.Bytes())
 	})

@@ -800,8 +800,12 @@ func (c *controller) GetMessage(
 		return nil, 0, err
 	}
 	if messageEncoding == buffetch.MessageEncodingBinpb {
-		if variant, _ := messageRef.CustomOptionValue("variant"); variant != "" {
-			text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{Variant: variant})
+		if framingStr, _ := messageRef.CustomOptionValue("framing"); framingStr != "" {
+			framing, err := protoscope.ParseFraming(framingStr)
+			if err != nil {
+				return nil, 0, err
+			}
+			text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{Framing: framing})
 			if err != nil {
 				return nil, 0, fmt.Errorf("failed to disassemble framed binary: %w", err)
 			}
@@ -819,8 +823,12 @@ func (c *controller) GetMessage(
 		}
 	}
 	if isProtoscope {
-		variant, _ := messageRef.CustomOptionValue("variant")
-		binaryBytes, diags := protoscope.AssembleWithOptions(messageRef.Path(), data, protoscope.AssembleOptions{Variant: variant})
+		framingStr, _ := messageRef.CustomOptionValue("framing")
+		framing, err := protoscope.ParseFraming(framingStr)
+		if err != nil {
+			return nil, 0, err
+		}
+		binaryBytes, diags := protoscope.AssembleWithOptions(messageRef.Path(), data, protoscope.AssembleOptions{Framing: framing})
 		var errMsgs []string
 		for _, d := range diags {
 			if d.Level == protoscope.SeverityError {
@@ -1530,8 +1538,12 @@ func newProtoencodingMarshaler(
 ) (protoencoding.Marshaler, error) {
 	switch messageEncoding := messageRef.MessageEncoding(); messageEncoding {
 	case buffetch.MessageEncodingBinpb:
-		if variant, _ := messageRef.CustomOptionValue("variant"); variant != "" {
-			return &framedWireMarshaler{variant: variant}, nil
+		if framingStr, _ := messageRef.CustomOptionValue("framing"); framingStr != "" {
+			framing, err := protoscope.ParseFraming(framingStr)
+			if err != nil {
+				return nil, err
+			}
+			return &framedWireMarshaler{framing: framing}, nil
 		}
 		return protoencoding.NewWireMarshaler(), nil
 	case buffetch.MessageEncodingJSON:
@@ -1541,8 +1553,12 @@ func newProtoencodingMarshaler(
 	case buffetch.MessageEncodingYAML:
 		return newYAMLMarshaler(image.Resolver(), messageRef), nil
 	case buffetch.MessageEncodingProtoscope:
-		variant, _ := messageRef.CustomOptionValue("variant")
-		return &protoscopeMarshaler{variant: variant}, nil
+		framingStr, _ := messageRef.CustomOptionValue("framing")
+		framing, err := protoscope.ParseFraming(framingStr)
+		if err != nil {
+			return nil, err
+		}
+		return &protoscopeMarshaler{framing: framing}, nil
 	default:
 		// This is a system error.
 		return nil, syserror.Newf("unknown MessageEncoding: %v", messageEncoding)
@@ -1550,7 +1566,7 @@ func newProtoencodingMarshaler(
 }
 
 type framedWireMarshaler struct {
-	variant string
+	framing protoscope.Framing
 }
 
 func (m *framedWireMarshaler) Marshal(message proto.Message) ([]byte, error) {
@@ -1562,7 +1578,7 @@ func (m *framedWireMarshaler) Marshal(message proto.Message) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	binaryBytes, diags := protoscope.AssembleWithOptions("output.binpb", []byte(text), protoscope.AssembleOptions{Variant: m.variant})
+	binaryBytes, diags := protoscope.AssembleWithOptions("output.binpb", []byte(text), protoscope.AssembleOptions{Framing: m.framing})
 	var errMsgs []string
 	for _, d := range diags {
 		if d.Level == protoscope.SeverityError {
@@ -1576,7 +1592,7 @@ func (m *framedWireMarshaler) Marshal(message proto.Message) ([]byte, error) {
 }
 
 type protoscopeMarshaler struct {
-	variant string
+	framing protoscope.Framing
 }
 
 func (m *protoscopeMarshaler) Marshal(message proto.Message) ([]byte, error) {
@@ -1584,7 +1600,7 @@ func (m *protoscopeMarshaler) Marshal(message proto.Message) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	text, err := protoscope.Disassemble(binaryBytes, protoscope.DisassembleOptions{Variant: m.variant})
+	text, err := protoscope.Disassemble(binaryBytes, protoscope.DisassembleOptions{Framing: m.framing})
 	if err != nil {
 		return nil, err
 	}
@@ -1808,12 +1824,20 @@ func (c *controller) Convert(
 		return err
 	}
 
-	fromVariant, _ := messageInputRef.CustomOptionValue("variant")
-	toVariant, _ := messageOutputRef.CustomOptionValue("variant")
+	fromFramingStr, _ := messageInputRef.CustomOptionValue("framing")
+	fromFraming, err := protoscope.ParseFraming(fromFramingStr)
+	if err != nil {
+		return err
+	}
+	toFramingStr, _ := messageOutputRef.CustomOptionValue("framing")
+	toFraming, err := protoscope.ParseFraming(toFramingStr)
+	if err != nil {
+		return err
+	}
 
 	var outputData []byte
 	if fromEncoding == buffetch.MessageEncodingProtoscope && toEncoding == buffetch.MessageEncodingBinpb {
-		binaryBytes, diags := protoscope.AssembleWithOptions(messageInputRef.Path(), data, protoscope.AssembleOptions{Variant: toVariant})
+		binaryBytes, diags := protoscope.AssembleWithOptions(messageInputRef.Path(), data, protoscope.AssembleOptions{Framing: toFraming})
 		var errMsgs []string
 		for _, d := range diags {
 			if d.Level == protoscope.SeverityError {
@@ -1825,17 +1849,17 @@ func (c *controller) Convert(
 		}
 		outputData = binaryBytes
 	} else if fromEncoding == buffetch.MessageEncodingBinpb && toEncoding == buffetch.MessageEncodingProtoscope {
-		text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{Variant: fromVariant})
+		text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{Framing: fromFraming})
 		if err != nil {
 			return err
 		}
 		outputData = []byte(text)
-	} else if fromEncoding == buffetch.MessageEncodingBinpb && toEncoding == buffetch.MessageEncodingBinpb && fromVariant != toVariant {
-		text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{Variant: fromVariant})
+	} else if fromEncoding == buffetch.MessageEncodingBinpb && toEncoding == buffetch.MessageEncodingBinpb && fromFraming != toFraming {
+		text, err := protoscope.Disassemble(data, protoscope.DisassembleOptions{Framing: fromFraming})
 		if err != nil {
 			return err
 		}
-		binaryBytes, diags := protoscope.AssembleWithOptions(messageInputRef.Path(), []byte(text), protoscope.AssembleOptions{Variant: toVariant})
+		binaryBytes, diags := protoscope.AssembleWithOptions(messageInputRef.Path(), []byte(text), protoscope.AssembleOptions{Framing: toFraming})
 		var errMsgs []string
 		for _, d := range diags {
 			if d.Level == protoscope.SeverityError {

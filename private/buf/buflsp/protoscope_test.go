@@ -292,6 +292,61 @@ func TestProtoscopeAssembleCommandError(t *testing.T) {
 	assert.Error(t, cmdErr)
 }
 
+func TestProtoscopeCommandsWithFraming(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	t.Run("disassemble grpc framing", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		filePath := filepath.Join(tempDir, "grpc.bin")
+		// gRPC header (5 bytes: flag=0, len=3) + wire bytes (3 bytes: 1: 150)
+		binaryData := []byte{0x00, 0x00, 0x00, 0x00, 0x03, 0x08, 0x96, 0x01}
+		err := os.WriteFile(filePath, binaryData, 0600)
+		require.NoError(t, err)
+
+		clientJSONConn, testURI := setupLSPServer(t, filePath)
+
+		var disassembledText string
+		_, cmdErr := clientJSONConn.Call(ctx, protocol.MethodWorkspaceExecuteCommand, protocol.ExecuteCommandParams{
+			Command:   "buf.protoscope.disassemble.server",
+			Arguments: []any{string(testURI), "grpc"},
+		}, &disassembledText)
+		require.NoError(t, cmdErr)
+		assert.Contains(t, disassembledText, "1: 150")
+	})
+
+	t.Run("assemble varint framing", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		filePath := filepath.Join(tempDir, "multi.protoscope")
+		content := "1: 150\n---\n2: \"hello\"\n"
+		err := os.WriteFile(filePath, []byte(content), 0600)
+		require.NoError(t, err)
+
+		clientJSONConn, testURI := setupLSPServer(t, filePath)
+
+		var assembledBase64 string
+		_, cmdErr := clientJSONConn.Call(ctx, protocol.MethodWorkspaceExecuteCommand, protocol.ExecuteCommandParams{
+			Command:   "buf.protoscope.assemble.server",
+			Arguments: []any{string(testURI), nil, "varint"},
+		}, &assembledBase64)
+		require.NoError(t, cmdErr)
+
+		binaryData, err := base64.StdEncoding.DecodeString(assembledBase64)
+		require.NoError(t, err)
+
+		// Expected output:
+		// Frame 1: length (3) + payload (08 96 01)
+		// Frame 2: length (7) + payload (12 05 68 65 6c 6c 6f)
+		expectedBytes := []byte{
+			0x03, 0x08, 0x96, 0x01,
+			0x07, 0x12, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f,
+		}
+		assert.Equal(t, expectedBytes, binaryData)
+	})
+}
+
 func TestProtoscopeUntitled(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

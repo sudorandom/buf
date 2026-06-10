@@ -44,7 +44,7 @@ func newRefParser(logger *slog.Logger) *refParser {
 			internal.WithSingleFormat(formatBin),
 			internal.WithSingleFormat(
 				formatBinpb,
-				internal.WithSingleCustomOptionKey(variantKey),
+				internal.WithSingleCustomOptionKey(framingKey),
 			),
 			internal.WithSingleFormat(
 				formatJSON,
@@ -59,7 +59,7 @@ func newRefParser(logger *slog.Logger) *refParser {
 			),
 			internal.WithSingleFormat(
 				formatProtoscope,
-				internal.WithSingleCustomOptionKey(variantKey),
+				internal.WithSingleCustomOptionKey(framingKey),
 			),
 			internal.WithSingleFormat(
 				formatBingz,
@@ -109,7 +109,7 @@ func newMessageRefParser(logger *slog.Logger, options ...MessageRefParserOption)
 			internal.WithSingleFormat(formatBin),
 			internal.WithSingleFormat(
 				formatBinpb,
-				internal.WithSingleCustomOptionKey(variantKey),
+				internal.WithSingleCustomOptionKey(framingKey),
 			),
 			internal.WithSingleFormat(
 				formatJSON,
@@ -124,7 +124,7 @@ func newMessageRefParser(logger *slog.Logger, options ...MessageRefParserOption)
 			),
 			internal.WithSingleFormat(
 				formatProtoscope,
-				internal.WithSingleCustomOptionKey(variantKey),
+				internal.WithSingleCustomOptionKey(framingKey),
 			),
 			internal.WithSingleFormat(
 				formatBingz,
