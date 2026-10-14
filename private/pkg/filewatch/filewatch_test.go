@@ -1,0 +1,330 @@
+// Copyright 2020-2026 Buf Technologies, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package filewatch
+
+import (
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	eventTimeout   = 10 * time.Second
+	noEventTimeout = 500 * time.Millisecond
+)
+
+func TestWatchDirPath(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	// The file exists before the directory is watched. On macOS, a change to
+	// a file right after it is created can be missed, as the kqueue watch of
+	// the new file is registered after its creation is reported.
+	filePath := filepath.Join(dirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	newFilePath := filepath.Join(dirPath, "b.proto")
+	require.NoError(t, os.WriteFile(newFilePath, []byte("b"), 0600))
+	requireEventForPath(t, watcher, newFilePath)
+
+	require.NoError(t, os.WriteFile(filePath, []byte("ab"), 0600))
+	requireEventForPath(t, watcher, filePath)
+
+	require.NoError(t, os.Remove(filePath))
+	requireEventForPath(t, watcher, filePath)
+}
+
+func TestWatchDirPathExistingSubDir(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	subDirPath := filepath.Join(dirPath, "sub")
+	require.NoError(t, os.Mkdir(subDirPath, 0700))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	filePath := filepath.Join(subDirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+}
+
+func TestWatchDirPathNewSubDir(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	subDirPath := filepath.Join(dirPath, "sub", "nested")
+	require.NoError(t, os.MkdirAll(subDirPath, 0700))
+	filePath := filepath.Join(subDirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+
+	drainEvents(t, watcher)
+	otherFilePath := filepath.Join(subDirPath, "b.proto")
+	require.NoError(t, os.WriteFile(otherFilePath, []byte("b"), 0600))
+	requireEventForPath(t, watcher, otherFilePath)
+}
+
+func TestWatchDirPathRemovedAndRecreated(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	subDirPath := filepath.Join(dirPath, "sub")
+	require.NoError(t, os.Mkdir(subDirPath, 0700))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	require.NoError(t, os.RemoveAll(subDirPath))
+	event := requireEventForPath(t, watcher, subDirPath)
+	require.True(t, event.IsRemovedDir)
+	require.NoError(t, os.Mkdir(subDirPath, 0700))
+	drainEvents(t, watcher)
+
+	filePath := filepath.Join(subDirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+	drainEvents(t, watcher)
+
+	// Removing and recreating the root watched directory itself watches it again.
+	require.NoError(t, os.RemoveAll(dirPath))
+	event = requireEventForPath(t, watcher, dirPath)
+	require.True(t, event.IsRemovedDir)
+	require.NoError(t, os.MkdirAll(subDirPath, 0700))
+	require.NoError(t, os.WriteFile(filePath, []byte("ab"), 0600))
+	requireEventForPath(t, watcher, filePath)
+}
+
+func TestWatchDirPathNotExistYet(t *testing.T) {
+	t.Parallel()
+	rootDirPath := t.TempDir()
+	dirPath := filepath.Join(rootDirPath, "internal", "proto")
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	// Files outside the watched directory are not reported while waiting for its creation.
+	require.NoError(t, os.WriteFile(filepath.Join(rootDirPath, "other.proto"), []byte("a"), 0600))
+	requireNoEvent(t, watcher)
+
+	subDirPath := filepath.Join(dirPath, "a", "v1")
+	require.NoError(t, os.MkdirAll(subDirPath, 0700))
+	filePath := filepath.Join(subDirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+	drainEvents(t, watcher)
+
+	otherFilePath := filepath.Join(subDirPath, "b.proto")
+	require.NoError(t, os.WriteFile(otherFilePath, []byte("b"), 0600))
+	requireEventForPath(t, watcher, otherFilePath)
+}
+
+func TestWatchDirPathIgnoresHiddenDirs(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	hiddenDirPath := filepath.Join(dirPath, ".hidden")
+	require.NoError(t, os.Mkdir(hiddenDirPath, 0700))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	require.NoError(t, os.WriteFile(filepath.Join(hiddenDirPath, "a.proto"), []byte("a"), 0600))
+	requireNoEvent(t, watcher)
+
+	newHiddenDirPath := filepath.Join(dirPath, ".new")
+	require.NoError(t, os.Mkdir(newHiddenDirPath, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(newHiddenDirPath, "a.proto"), []byte("a"), 0600))
+	requireNoEvent(t, watcher)
+}
+
+func TestSetExcludeDirPaths(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	excludedDirPath := filepath.Join(dirPath, "gen")
+	require.NoError(t, os.Mkdir(excludedDirPath, 0700))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.SetExcludeDirPaths(excludedDirPath))
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	require.NoError(t, os.WriteFile(filepath.Join(excludedDirPath, "a.go"), []byte("a"), 0600))
+	requireNoEvent(t, watcher)
+
+	// Excluded directories are not watched even if added explicitly.
+	require.NoError(t, watcher.AddDirPath(excludedDirPath))
+	require.NoError(t, os.WriteFile(filepath.Join(excludedDirPath, "b.go"), []byte("b"), 0600))
+	requireNoEvent(t, watcher)
+
+	filePath := filepath.Join(dirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+
+	// Directories that are no longer excluded are watched again, including
+	// subdirectories created while excluded.
+	excludedSubDirPath := filepath.Join(excludedDirPath, "sub")
+	require.NoError(t, os.Mkdir(excludedSubDirPath, 0700))
+	require.NoError(t, watcher.SetExcludeDirPaths())
+	excludedSubFilePath := filepath.Join(excludedSubDirPath, "c.proto")
+	require.NoError(t, os.WriteFile(excludedSubFilePath, []byte("c"), 0600))
+	requireEventForPath(t, watcher, excludedSubFilePath)
+	// The creation may be reported again as a write.
+	drainEvents(t, watcher)
+
+	// Exclusions apply to directories that are already watched.
+	require.NoError(t, watcher.SetExcludeDirPaths(dirPath))
+	require.NoError(t, os.WriteFile(filePath, []byte("ab"), 0600))
+	require.NoError(t, os.WriteFile(excludedSubFilePath, []byte("cd"), 0600))
+	requireNoEvent(t, watcher)
+
+	// Watched files are reported even if excluded.
+	watchedFilePath := filepath.Join(dirPath, "buf.gen.yaml")
+	require.NoError(t, watcher.AddFilePath(watchedFilePath))
+	require.NoError(t, os.WriteFile(watchedFilePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, watchedFilePath)
+
+	// Excluding the root and then including it again watches it again.
+	require.NoError(t, watcher.SetExcludeDirPaths())
+	require.NoError(t, os.WriteFile(filePath, []byte("abc"), 0600))
+	requireEventForPath(t, watcher, filePath)
+}
+
+func TestSetExcludeDirPathsKeepsWatchedFiles(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	watchedFilePath := filepath.Join(dirPath, "buf.gen.yaml")
+	require.NoError(t, os.WriteFile(watchedFilePath, []byte("a"), 0600))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddFilePath(watchedFilePath))
+	require.NoError(t, watcher.AddDirPath(dirPath))
+
+	// Excluding the directory of a watched file after it was added keeps
+	// reporting the file.
+	require.NoError(t, watcher.SetExcludeDirPaths(dirPath))
+	require.NoError(t, os.WriteFile(filepath.Join(dirPath, "a.proto"), []byte("a"), 0600))
+	requireNoEvent(t, watcher)
+	require.NoError(t, os.WriteFile(watchedFilePath, []byte("ab"), 0600))
+	requireEventForPath(t, watcher, watchedFilePath)
+}
+
+func TestWatchFilePath(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	filePath := filepath.Join(dirPath, "buf.gen.yaml")
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddFilePath(filePath))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dirPath, "other.yaml"), []byte("a"), 0600))
+	requireNoEvent(t, watcher)
+
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+	// The creation may be reported again as a write.
+	drainEvents(t, watcher)
+
+	subDirPath := filepath.Join(dirPath, "sub")
+	require.NoError(t, os.Mkdir(subDirPath, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(subDirPath, "a.proto"), []byte("a"), 0600))
+	requireNoEvent(t, watcher)
+}
+
+func TestWatchFilePathParentRecreated(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	subDirPath := filepath.Join(dirPath, "sub")
+	require.NoError(t, os.Mkdir(subDirPath, 0700))
+	filePath := filepath.Join(subDirPath, "buf.yaml")
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddFilePath(filePath))
+
+	// The underlying watch is lost with the directory, and so adding the
+	// file again once the directory is recreated must establish it again.
+	require.NoError(t, os.RemoveAll(subDirPath))
+	drainEvents(t, watcher)
+	require.NoError(t, os.Mkdir(subDirPath, 0700))
+	require.NoError(t, watcher.AddFilePath(filePath))
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+}
+
+func TestClose(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	watcher, err := NewWatcher(slog.New(slog.DiscardHandler))
+	require.NoError(t, err)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+	require.NoError(t, watcher.Close())
+	require.NoError(t, watcher.Close())
+	_, ok := <-watcher.Events()
+	require.False(t, ok)
+	_, ok = <-watcher.Errors()
+	require.False(t, ok)
+}
+
+func newTestWatcher(t *testing.T) Watcher {
+	watcher, err := NewWatcher(slog.New(slog.DiscardHandler))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, watcher.Close())
+	})
+	return watcher
+}
+
+// requireEventForPath waits until an Event for the given path is received,
+// discarding Events for other paths.
+func requireEventForPath(t *testing.T, watcher Watcher, path string) Event {
+	timer := time.NewTimer(eventTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case event, ok := <-watcher.Events():
+			require.True(t, ok, "watcher closed while waiting for event for %s", path)
+			if event.Path == path {
+				return event
+			}
+		case err := <-watcher.Errors():
+			require.NoError(t, err)
+		case <-timer.C:
+			require.Fail(t, "timed out waiting for event", "path: %s", path)
+		}
+	}
+}
+
+// requireNoEvent requires that no Event is received for a short time.
+func requireNoEvent(t *testing.T, watcher Watcher) {
+	timer := time.NewTimer(noEventTimeout)
+	defer timer.Stop()
+	select {
+	case event := <-watcher.Events():
+		require.Fail(t, "unexpected event", "path: %s", event.Path)
+	case err := <-watcher.Errors():
+		require.NoError(t, err)
+	case <-timer.C:
+	}
+}
+
+// drainEvents discards any Events received for a short time.
+func drainEvents(t *testing.T, watcher Watcher) {
+	timer := time.NewTimer(noEventTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-watcher.Events():
+		case err := <-watcher.Errors():
+			require.NoError(t, err)
+		case <-timer.C:
+			return
+		}
+	}
+}

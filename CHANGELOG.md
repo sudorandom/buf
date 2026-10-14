@@ -1,6 +1,9 @@
 # Changelog
 ## [Unreleased]
 
+- Add `--watch` flag to `buf generate`, which keeps running and regenerates whenever a
+  `.proto` file in a local module, the workspace configuration, or the template changes.
+  Changes to inputs that are not local directories or `.proto` files are not detected.
 - Improve the performance of the `PROTOVALIDATE` lint rule, which is now up to 3x faster
   and allocates less memory on modules using `cel` rules or `example` values.
 - Send the module name of each file to check plugins, which is available as

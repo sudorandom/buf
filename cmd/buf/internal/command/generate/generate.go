@@ -53,6 +53,7 @@ const (
 	typeFlagName                = "type"
 	typeDeprecatedFlagName      = "include-types"
 	excludeTypeFlagName         = "exclude-type"
+	watchFlagName               = "watch"
 )
 
 // NewCommand returns a new Command.
@@ -378,6 +379,14 @@ has a per-directory parallel invocation, with results from each invocation combi
 before writing the result.
 
 Insertion points are processed in the order the plugins are specified in the template.
+
+Use --watch to keep running and regenerate whenever a .proto file in a local module, a
+buf.yaml, buf.lock, or buf.work.yaml, or the template changes:
+
+    $ buf generate --watch
+
+Changes to inputs that are not local directories or .proto files, such as modules, git
+repositories, archives, and images, are not detected.
 `,
 		Args: appcmd.MaximumNArgs(1),
 		Run: builder.NewRunFunc(
@@ -416,6 +425,7 @@ type flags struct {
 	IncludeWKTOverride     *bool
 	ExcludePaths           []string
 	DisableSymlinks        bool
+	Watch                  bool
 	// We may be able to bind two flags to one string slice but I don't
 	// want to find out what will break if we do.
 	Types           []string
@@ -501,6 +511,12 @@ func (f *flags) Bind(flagSet *pflag.FlagSet) {
 		nil,
 		"The types (package, message, enum, extension, service, method) that should be excluded from this image. When specified, the resulting image will omit descriptors for the specified types and remove any references to them, such as fields typed to an excluded message or enum, or custom options tied to an excluded extension. A type name may end with \".**\" to recursively exclude the named element and everything nested beneath it, such as a package and all of its sub-packages. The image is first filtered by the included types, then further reduced by the excluded. Flag usage overrides buf.gen.yaml",
 	)
+	flagSet.BoolVar(
+		&f.Watch,
+		watchFlagName,
+		false,
+		"Keep running and regenerate when a .proto file or configuration file of a local input changes",
+	)
 	_ = flagSet.MarkDeprecated(typeDeprecatedFlagName, fmt.Sprintf("use --%s instead", typeFlagName))
 	_ = flagSet.MarkHidden(typeDeprecatedFlagName)
 }
@@ -544,51 +560,77 @@ func run(
 	if err != nil {
 		return err
 	}
-	bufGenYAMLFile, err := readBufGenYAMLFile(ctx, storageosProvider, flags.Template)
+	runner := &runner{
+		logger:            logger,
+		storageosProvider: storageosProvider,
+		controller:        controller,
+		generator: bufgen.NewGenerator(
+			logger,
+			storageosProvider,
+			clientConfig,
+		),
+		flags: flags,
+		input: input,
+	}
+	if flags.Watch {
+		return runWatch(ctx, container, runner)
+	}
+	return runner.run(ctx, container)
+}
+
+// runner runs generation for a fixed set of flags and input.
+type runner struct {
+	logger            *slog.Logger
+	storageosProvider storageos.Provider
+	controller        bufctl.Controller
+	generator         bufgen.Generator
+	flags             *flags
+	input             string
+}
+
+// run runs generation once.
+func (r *runner) run(ctx context.Context, container appext.Container) error {
+	bufGenYAMLFile, err := readBufGenYAMLFile(ctx, r.storageosProvider, r.flags.Template)
 	if err != nil {
 		return err
 	}
 	images, err := getInputImages(
 		ctx,
-		logger,
-		controller,
-		input,
+		r.logger,
+		r.controller,
+		r.input,
 		bufGenYAMLFile,
-		flags.Config,
-		flags.Paths,
-		flags.ExcludePaths,
-		append(flags.Types, flags.TypesDeprecated...),
-		flags.ExcludeTypes,
+		r.flags.Config,
+		r.flags.Paths,
+		r.flags.ExcludePaths,
+		append(r.flags.Types, r.flags.TypesDeprecated...),
+		r.flags.ExcludeTypes,
 	)
 	if err != nil {
 		return err
 	}
 	generateOptions := []bufgen.GenerateOption{
-		bufgen.GenerateWithBaseOutDirPath(flags.BaseOutDirPath),
+		bufgen.GenerateWithBaseOutDirPath(r.flags.BaseOutDirPath),
 	}
-	if flags.DeleteOuts != nil {
+	if r.flags.DeleteOuts != nil {
 		generateOptions = append(
 			generateOptions,
-			bufgen.GenerateWithDeleteOuts(*flags.DeleteOuts),
+			bufgen.GenerateWithDeleteOuts(*r.flags.DeleteOuts),
 		)
 	}
-	if flags.IncludeImportsOverride != nil {
+	if r.flags.IncludeImportsOverride != nil {
 		generateOptions = append(
 			generateOptions,
-			bufgen.GenerateWithIncludeImportsOverride(*flags.IncludeImportsOverride),
+			bufgen.GenerateWithIncludeImportsOverride(*r.flags.IncludeImportsOverride),
 		)
 	}
-	if flags.IncludeWKTOverride != nil {
+	if r.flags.IncludeWKTOverride != nil {
 		generateOptions = append(
 			generateOptions,
-			bufgen.GenerateWithIncludeWellKnownTypesOverride(*flags.IncludeWKTOverride),
+			bufgen.GenerateWithIncludeWellKnownTypesOverride(*r.flags.IncludeWKTOverride),
 		)
 	}
-	return bufgen.NewGenerator(
-		logger,
-		storageosProvider,
-		clientConfig,
-	).Generate(
+	return r.generator.Generate(
 		ctx,
 		container,
 		bufGenYAMLFile.GenerateConfig(),
@@ -602,7 +644,6 @@ func readBufGenYAMLFile(
 	storageosProvider storageos.Provider,
 	templatePath string,
 ) (bufconfig.BufGenYAMLFile, error) {
-	templatePathExtension := filepath.Ext(templatePath)
 	switch {
 	case templatePath == "":
 		bucket, err := storageosProvider.NewReadWriteBucket(".", storageos.ReadWriteBucketWithSymlinksIfSupported())
@@ -610,7 +651,7 @@ func readBufGenYAMLFile(
 			return nil, err
 		}
 		return bufconfig.GetBufGenYAMLFileForPrefix(ctx, bucket, ".")
-	case templatePathExtension == ".yaml" || templatePathExtension == ".yml" || templatePathExtension == ".json":
+	case isConfigFilePath(templatePath):
 		// We should not read from a bucket at "." because this path can jump context.
 		configFile, err := os.Open(templatePath)
 		if err != nil {
@@ -698,6 +739,17 @@ func getInputImages(
 		inputImages = append(inputImages, inputImage)
 	}
 	return inputImages, nil
+}
+
+// isConfigFilePath returns true if the value of the template or config flag
+// is a path to a file, as opposed to inline YAML or JSON data.
+func isConfigFilePath(value string) bool {
+	switch filepath.Ext(value) {
+	case ".yaml", ".yml", ".json":
+		return true
+	default:
+		return false
+	}
 }
 
 // TODO FUTURE: where does this belong? A flagsext package?
