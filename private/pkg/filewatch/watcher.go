@@ -101,7 +101,7 @@ func (w *watcher) AddDirPath(dirPath string) error {
 		return nil
 	}
 	w.rootDirPaths[absDirPath] = struct{}{}
-	if _, _, err := w.reconcileLocked(false); err != nil {
+	if _, _, err := w.reconcileLocked(false, ""); err != nil {
 		delete(w.rootDirPaths, absDirPath)
 		return err
 	}
@@ -119,7 +119,7 @@ func (w *watcher) AddFilePath(filePath string) error {
 		return nil
 	}
 	w.filePaths[absFilePath] = struct{}{}
-	if _, _, err := w.reconcileLocked(false); err != nil {
+	if _, _, err := w.reconcileLocked(false, ""); err != nil {
 		delete(w.filePaths, absFilePath)
 		return err
 	}
@@ -138,8 +138,12 @@ func (w *watcher) SetExcludeDirPaths(dirPaths ...string) error {
 	slices.Sort(excludeDirPaths)
 	w.lock.Lock()
 	defer w.lock.Unlock()
-	w.excludeDirPaths = slices.Compact(excludeDirPaths)
-	_, _, err := w.reconcileLocked(false)
+	excludeDirPaths = slices.Compact(excludeDirPaths)
+	if slices.Equal(w.excludeDirPaths, excludeDirPaths) {
+		return nil
+	}
+	w.excludeDirPaths = excludeDirPaths
+	_, _, err := w.reconcileLocked(false, "")
 	return err
 }
 
@@ -196,14 +200,14 @@ func (w *watcher) handleFsnotifyEvent(fsnotifyEvent fsnotify.Event) {
 	case fsnotifyEvent.Has(fsnotify.Create):
 		if fileInfo, err := os.Stat(path); err == nil && fileInfo.IsDir() {
 			// The directory is reported through the files within it.
-			w.reconcile()
+			w.reconcile(path)
 			return
 		}
 	case fsnotifyEvent.Has(fsnotify.Remove), fsnotifyEvent.Has(fsnotify.Rename):
 		if w.isWatchedDirPath(path) {
 			// Reported by reconcile, which may also have reported it already
 			// for a directory that was removed along with it.
-			w.reconcile()
+			w.reconcile(path)
 			return
 		}
 	}
@@ -212,13 +216,13 @@ func (w *watcher) handleFsnotifyEvent(fsnotifyEvent fsnotify.Event) {
 	}
 }
 
-// reconcile updates the watched directories after a change on disk. It
-// reports the watched directories that were removed, and the files within
-// the directories that are newly watched, as they may have been created
-// before the directory was watched.
-func (w *watcher) reconcile() {
+// reconcile updates the watched directories after a change to the directory
+// at path. It reports the watched directories that were removed, and the
+// files within the directories that are newly watched, as they may have been
+// created before the directory was watched.
+func (w *watcher) reconcile(path string) {
 	w.lock.Lock()
-	removedDirPaths, newDirPaths, err := w.reconcileLocked(true)
+	removedDirPaths, newDirPaths, err := w.reconcileLocked(true, path)
 	w.lock.Unlock()
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		w.sendError(err)
@@ -253,8 +257,12 @@ func (w *watcher) reconcile() {
 // removed are returned. Otherwise, a watched directory that no longer exists
 // is left for its event to report.
 //
+// If scopePath is not empty, only the roots and files related to it, by one
+// containing the other, are walked, and the directories watched for the
+// others are kept as they are.
+//
 // It returns the removed directories and the newly watched directories.
-func (w *watcher) reconcileLocked(sync bool) ([]string, []string, error) {
+func (w *watcher) reconcileLocked(sync bool, scopePath string) ([]string, []string, error) {
 	var previouslyWatchedDirPaths map[string]struct{}
 	if sync {
 		previouslyWatchedDirPaths = w.watchedDirPaths
@@ -267,14 +275,42 @@ func (w *watcher) reconcileLocked(sync bool) ([]string, []string, error) {
 	var newDirPaths []string
 	desiredDirPaths := make(map[string]struct{})
 	activeExcludeDirPaths := w.activeExcludeDirPathsLocked()
+	var normalizedUnrelatedDirPaths []string
+	normalizedScopePath := normalpath.Normalize(scopePath)
+	isInScope := func(dirPath string) bool {
+		normalizedDirPath := normalpath.Normalize(dirPath)
+		if scopePath == "" || isRelatedNormalizedPath(normalizedDirPath, normalizedScopePath) {
+			return true
+		}
+		normalizedUnrelatedDirPaths = append(normalizedUnrelatedDirPaths, normalizedDirPath)
+		return false
+	}
 	for _, rootDirPath := range slices.Sorted(maps.Keys(w.rootDirPaths)) {
+		if !isInScope(rootDirPath) {
+			continue
+		}
 		if err := w.watchDirPathLocked(rootDirPath, true, activeExcludeDirPaths, desiredDirPaths, &newDirPaths); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	for _, filePath := range slices.Sorted(maps.Keys(w.filePaths)) {
-		if err := w.watchDirPathLocked(filepath.Dir(filePath), false, nil, desiredDirPaths, &newDirPaths); err != nil {
+		fileDirPath := filepath.Dir(filePath)
+		if !isInScope(fileDirPath) {
+			continue
+		}
+		if err := w.watchDirPathLocked(fileDirPath, false, nil, desiredDirPaths, &newDirPaths); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	// Nothing changed for the roots and files out of scope, so the
+	// directories watched for them, including ancestors watched for their
+	// creation, stay as they are.
+	for dirPath := range w.watchedDirPaths {
+		normalizedDirPath := normalpath.Normalize(dirPath)
+		if slices.ContainsFunc(normalizedUnrelatedDirPaths, func(normalizedUnrelatedDirPath string) bool {
+			return isRelatedNormalizedPath(normalizedDirPath, normalizedUnrelatedDirPath)
+		}) {
+			desiredDirPaths[dirPath] = struct{}{}
 		}
 	}
 	for dirPath := range w.watchedDirPaths {
@@ -479,6 +515,16 @@ func isExcludedPath(path string, activeExcludeDirPaths []string) bool {
 		}
 	}
 	return false
+}
+
+// isRelatedNormalizedPath returns true if either absolute normalized path
+// equals or contains the other.
+func isRelatedNormalizedPath(normalizedPath string, normalizedOtherPath string) bool {
+	if normalizedPath == normalizedOtherPath || normalizedPath == "/" || normalizedOtherPath == "/" {
+		return true
+	}
+	return strings.HasPrefix(normalizedPath, normalizedOtherPath+"/") ||
+		strings.HasPrefix(normalizedOtherPath, normalizedPath+"/")
 }
 
 // nearestExistingAncestorDirPath returns the nearest ancestor of path that

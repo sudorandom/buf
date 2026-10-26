@@ -150,6 +150,26 @@ func TestWatchDirPathSymlink(t *testing.T) {
 	requireEventForPath(t, watcher, filePath)
 }
 
+func TestWatchDirPathNotExistYetWithOtherRoot(t *testing.T) {
+	t.Parallel()
+	rootDirPath := t.TempDir()
+	dirPath := filepath.Join(rootDirPath, "proto")
+	otherDirPath := filepath.Join(t.TempDir(), "other")
+	require.NoError(t, os.Mkdir(otherDirPath, 0700))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+	require.NoError(t, watcher.AddDirPath(otherDirPath))
+
+	// A change within another root does not disturb the watch for the
+	// creation of the missing one.
+	require.NoError(t, os.Mkdir(filepath.Join(otherDirPath, "sub"), 0700))
+	drainEvents(t, watcher)
+	filePath := filepath.Join(dirPath, "a.proto")
+	require.NoError(t, os.Mkdir(dirPath, 0700))
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+}
+
 func TestWatchDirPathIgnoresHiddenDirs(t *testing.T) {
 	t.Parallel()
 	dirPath := t.TempDir()
