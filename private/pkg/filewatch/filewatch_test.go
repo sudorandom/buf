@@ -15,6 +15,7 @@
 package filewatch
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -177,11 +178,6 @@ func TestSetExcludeDirPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(excludedDirPath, "a.go"), []byte("a"), 0600))
 	requireNoEvent(t, watcher)
 
-	// Excluded directories are not watched even if added explicitly.
-	require.NoError(t, watcher.AddDirPath(excludedDirPath))
-	require.NoError(t, os.WriteFile(filepath.Join(excludedDirPath, "b.go"), []byte("b"), 0600))
-	requireNoEvent(t, watcher)
-
 	filePath := filepath.Join(dirPath, "a.proto")
 	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
 	requireEventForPath(t, watcher, filePath)
@@ -198,27 +194,51 @@ func TestSetExcludeDirPaths(t *testing.T) {
 	drainEvents(t, watcher)
 
 	// Exclusions apply to directories that are already watched.
-	require.NoError(t, watcher.SetExcludeDirPaths(dirPath))
-	require.NoError(t, os.WriteFile(filePath, []byte("ab"), 0600))
+	require.NoError(t, watcher.SetExcludeDirPaths(excludedDirPath))
 	require.NoError(t, os.WriteFile(excludedSubFilePath, []byte("cd"), 0600))
 	requireNoEvent(t, watcher)
 
 	// Watched files are reported even if excluded.
-	watchedFilePath := filepath.Join(dirPath, "buf.gen.yaml")
+	watchedFilePath := filepath.Join(excludedDirPath, "buf.gen.yaml")
 	require.NoError(t, watcher.AddFilePath(watchedFilePath))
 	require.NoError(t, os.WriteFile(watchedFilePath, []byte("a"), 0600))
 	requireEventForPath(t, watcher, watchedFilePath)
+}
 
-	// Excluding the root and then including it again watches it again.
-	require.NoError(t, watcher.SetExcludeDirPaths())
-	require.NoError(t, os.WriteFile(filePath, []byte("abc"), 0600))
+func TestSetExcludeDirPathsContainingRoot(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	moduleDirPath := filepath.Join(dirPath, "proto")
+	require.NoError(t, os.Mkdir(moduleDirPath, 0700))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(moduleDirPath))
+
+	// An excluded directory that contains a watched directory, as with
+	// out: . and a module at the root, does not apply.
+	require.NoError(t, watcher.SetExcludeDirPaths(dirPath))
+	filePath := filepath.Join(moduleDirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
 	requireEventForPath(t, watcher, filePath)
+
+	// Nor does an excluded directory once it is watched itself.
+	genDirPath := filepath.Join(moduleDirPath, "gen")
+	require.NoError(t, os.Mkdir(genDirPath, 0700))
+	require.NoError(t, watcher.SetExcludeDirPaths(genDirPath))
+	drainEvents(t, watcher)
+	genFilePath := filepath.Join(genDirPath, "b.proto")
+	require.NoError(t, os.WriteFile(genFilePath, []byte("b"), 0600))
+	requireNoEvent(t, watcher)
+	require.NoError(t, watcher.AddDirPath(genDirPath))
+	require.NoError(t, os.WriteFile(genFilePath, []byte("bc"), 0600))
+	requireEventForPath(t, watcher, genFilePath)
 }
 
 func TestSetExcludeDirPathsKeepsWatchedFiles(t *testing.T) {
 	t.Parallel()
 	dirPath := t.TempDir()
-	watchedFilePath := filepath.Join(dirPath, "buf.gen.yaml")
+	excludedDirPath := filepath.Join(dirPath, "gen")
+	require.NoError(t, os.Mkdir(excludedDirPath, 0700))
+	watchedFilePath := filepath.Join(excludedDirPath, "buf.gen.yaml")
 	require.NoError(t, os.WriteFile(watchedFilePath, []byte("a"), 0600))
 	watcher := newTestWatcher(t)
 	require.NoError(t, watcher.AddFilePath(watchedFilePath))
@@ -226,8 +246,8 @@ func TestSetExcludeDirPathsKeepsWatchedFiles(t *testing.T) {
 
 	// Excluding the directory of a watched file after it was added keeps
 	// reporting the file.
-	require.NoError(t, watcher.SetExcludeDirPaths(dirPath))
-	require.NoError(t, os.WriteFile(filepath.Join(dirPath, "a.proto"), []byte("a"), 0600))
+	require.NoError(t, watcher.SetExcludeDirPaths(excludedDirPath))
+	require.NoError(t, os.WriteFile(filepath.Join(excludedDirPath, "a.proto"), []byte("a"), 0600))
 	requireNoEvent(t, watcher)
 	require.NoError(t, os.WriteFile(watchedFilePath, []byte("ab"), 0600))
 	requireEventForPath(t, watcher, watchedFilePath)
@@ -271,6 +291,49 @@ func TestWatchFilePathParentRecreated(t *testing.T) {
 	require.NoError(t, watcher.AddFilePath(filePath))
 	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
 	requireEventForPath(t, watcher, filePath)
+}
+
+func TestRun(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(dirPath))
+	ctx, cancel := context.WithCancel(t.Context())
+	changesChan := make(chan []string)
+	doneChan := make(chan struct{})
+	go func() {
+		defer close(doneChan)
+		Run(
+			ctx,
+			slog.New(slog.DiscardHandler),
+			watcher,
+			noEventTimeout,
+			func(event Event) bool { return filepath.Ext(event.Path) == ".proto" },
+			func(_ context.Context, changedPaths []string) { changesChan <- changedPaths },
+		)
+	}()
+
+	// Changes within the debounce duration are reported together, sorted
+	// and without duplicates, and irrelevant changes are ignored.
+	bFilePath := filepath.Join(dirPath, "b.proto")
+	aFilePath := filepath.Join(dirPath, "a.proto")
+	require.NoError(t, os.WriteFile(bFilePath, []byte("b"), 0600))
+	require.NoError(t, os.WriteFile(aFilePath, []byte("a"), 0600))
+	require.NoError(t, os.WriteFile(aFilePath, []byte("ab"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dirPath, "README.md"), []byte("a"), 0600))
+	select {
+	case changedPaths := <-changesChan:
+		require.Equal(t, []string{aFilePath, bFilePath}, changedPaths)
+	case <-time.After(eventTimeout):
+		require.Fail(t, "timed out waiting for changes")
+	}
+
+	cancel()
+	select {
+	case <-doneChan:
+	case <-time.After(eventTimeout):
+		require.Fail(t, "timed out waiting for Run to return")
+	}
 }
 
 func TestClose(t *testing.T) {

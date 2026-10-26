@@ -56,8 +56,12 @@ type watcher struct {
 	pendingDirPaths map[string]struct{}
 	// filePaths are the individual files that are reported.
 	filePaths map[string]struct{}
-	// normalizedExcludeDirPaths are in normalpath form for use with normalpath.EqualsOrContainsPath.
-	normalizedExcludeDirPaths []string
+	// excludeDirPaths are the directories given to SetExcludeDirPaths, in
+	// normalpath form for use with normalpath.EqualsOrContainsPath.
+	excludeDirPaths []string
+	// activeExcludeDirPaths are the excludeDirPaths that apply, which are those
+	// that do not contain a root directory.
+	activeExcludeDirPaths []string
 }
 
 func newWatcher(logger *slog.Logger) (*watcher, error) {
@@ -94,9 +98,27 @@ func (w *watcher) AddDirPath(dirPath string) error {
 		}
 	}
 	w.lock.Lock()
+	if _, ok := w.rootDirPaths[absDirPath]; ok {
+		w.lock.Unlock()
+		return nil
+	}
 	w.rootDirPaths[absDirPath] = struct{}{}
+	// An excluded directory that contains the new root no longer applies.
+	excludesChanged := w.updateActiveExcludeDirPathsLocked()
 	w.lock.Unlock()
-	return w.watchRootDirPath(absDirPath, false)
+	if excludesChanged {
+		err = w.watchRootDirPaths()
+	} else {
+		err = w.watchRootDirPath(absDirPath, false)
+	}
+	if err != nil {
+		// The root may be added again to retry.
+		w.lock.Lock()
+		delete(w.rootDirPaths, absDirPath)
+		w.lock.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (w *watcher) AddFilePath(filePath string) error {
@@ -124,32 +146,31 @@ func (w *watcher) SetExcludeDirPaths(dirPaths ...string) error {
 		normalizedExcludeDirPaths = append(normalizedExcludeDirPaths, normalpath.Normalize(absDirPath))
 	}
 	slices.Sort(normalizedExcludeDirPaths)
-	normalizedExcludeDirPaths = slices.Compact(normalizedExcludeDirPaths)
-	rootDirPaths, changed := w.setNormalizedExcludeDirPaths(normalizedExcludeDirPaths)
+	w.lock.Lock()
+	w.excludeDirPaths = slices.Compact(normalizedExcludeDirPaths)
+	changed := w.updateActiveExcludeDirPathsLocked()
+	w.lock.Unlock()
 	if !changed {
 		return nil
 	}
-	// Watch the subdirectories of the roots that are no longer excluded.
-	// Directories that are already watched are skipped.
-	for _, rootDirPath := range rootDirPaths {
-		if err := w.watchRootDirPath(rootDirPath, false); err != nil {
-			return err
-		}
-	}
-	return nil
+	return w.watchRootDirPaths()
 }
 
-// setNormalizedExcludeDirPaths sets the excluded directories and stops watching
-// the directories that are now excluded.
+// updateActiveExcludeDirPathsLocked recomputes the excluded directories that
+// apply and stops watching the directories that are now excluded.
 //
-// It returns the root directories and whether the excluded directories changed.
-func (w *watcher) setNormalizedExcludeDirPaths(normalizedExcludeDirPaths []string) ([]string, bool) {
-	w.lock.Lock()
-	defer w.lock.Unlock()
-	if slices.Equal(w.normalizedExcludeDirPaths, normalizedExcludeDirPaths) {
-		return nil, false
+// It returns whether the active excluded directories changed.
+func (w *watcher) updateActiveExcludeDirPathsLocked() bool {
+	var activeExcludeDirPaths []string
+	for _, excludeDirPath := range w.excludeDirPaths {
+		if !w.containsRootDirPathLocked(excludeDirPath) {
+			activeExcludeDirPaths = append(activeExcludeDirPaths, excludeDirPath)
+		}
 	}
-	w.normalizedExcludeDirPaths = normalizedExcludeDirPaths
+	if slices.Equal(w.activeExcludeDirPaths, activeExcludeDirPaths) {
+		return false
+	}
+	w.activeExcludeDirPaths = activeExcludeDirPaths
 	for dirPath := range w.recursiveDirPaths {
 		if !w.isExcludedPathLocked(dirPath) {
 			continue
@@ -157,7 +178,30 @@ func (w *watcher) setNormalizedExcludeDirPaths(normalizedExcludeDirPaths []strin
 		delete(w.recursiveDirPaths, dirPath)
 		w.removeUnneededWatchLocked(dirPath)
 	}
-	return slices.Sorted(maps.Keys(w.rootDirPaths)), true
+	return true
+}
+
+func (w *watcher) containsRootDirPathLocked(normalizedDirPath string) bool {
+	for rootDirPath := range w.rootDirPaths {
+		if normalpath.EqualsOrContainsPath(normalizedDirPath, normalpath.Normalize(rootDirPath), normalpath.Absolute) {
+			return true
+		}
+	}
+	return false
+}
+
+// watchRootDirPaths watches all root directories again, as after the excluded
+// directories change. Directories that are already watched are skipped.
+func (w *watcher) watchRootDirPaths() error {
+	w.lock.RLock()
+	rootDirPaths := slices.Sorted(maps.Keys(w.rootDirPaths))
+	w.lock.RUnlock()
+	for _, rootDirPath := range rootDirPaths {
+		if err := w.watchRootDirPath(rootDirPath, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // removeUnneededWatchLocked stops watching dirPath in fsnotifyWatcher if it is
@@ -555,11 +599,11 @@ func (w *watcher) sendEventsForFilesInDirPath(absDirPath string) error {
 }
 
 func (w *watcher) isExcludedPathLocked(path string) bool {
-	if len(w.normalizedExcludeDirPaths) == 0 {
+	if len(w.activeExcludeDirPaths) == 0 {
 		return false
 	}
 	normalizedPath := normalpath.Normalize(path)
-	for _, normalizedExcludeDirPath := range w.normalizedExcludeDirPaths {
+	for _, normalizedExcludeDirPath := range w.activeExcludeDirPaths {
 		if normalpath.EqualsOrContainsPath(normalizedExcludeDirPath, normalizedPath, normalpath.Absolute) {
 			return true
 		}

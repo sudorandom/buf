@@ -16,8 +16,14 @@
 package filewatch
 
 import (
+	"context"
+	"errors"
 	"log/slog"
+	"maps"
+	"slices"
+	"time"
 
+	"buf.build/go/standard/xlog/xslog"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -49,7 +55,8 @@ type Watcher interface {
 	// Adding it again re-establishes the watch if its directory was recreated.
 	AddFilePath(filePath string) error
 	// SetExcludeDirPaths replaces the set of directories within which changes
-	// are not reported. Files added with AddFilePath are reported regardless.
+	// are not reported. A directory that contains a watched directory is not
+	// excluded. Files added with AddFilePath are reported regardless.
 	SetExcludeDirPaths(dirPaths ...string) error
 	// Events returns the channel on which Events are sent. It is closed by Close.
 	Events() <-chan Event
@@ -63,4 +70,50 @@ type Watcher interface {
 // NewWatcher returns a new Watcher, which must be closed when no longer needed.
 func NewWatcher(logger *slog.Logger) (Watcher, error) {
 	return newWatcher(logger)
+}
+
+// Run calls onChanges with the paths that changed, until ctx is done or the
+// Watcher is closed.
+//
+// Events for which isRelevant returns false are ignored. onChanges is called
+// with the sorted paths of the relevant Events once no relevant Event has been
+// received for debounceDuration. The paths are empty if changes were dropped,
+// in which case any watched file may have changed. Errors are logged.
+func Run(
+	ctx context.Context,
+	logger *slog.Logger,
+	watcher Watcher,
+	debounceDuration time.Duration,
+	isRelevant func(Event) bool,
+	onChanges func(context.Context, []string),
+) {
+	timer := time.NewTimer(debounceDuration)
+	timer.Stop()
+	changedPaths := make(map[string]struct{})
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-watcher.Events():
+			if !ok {
+				return
+			}
+			if !isRelevant(event) {
+				continue
+			}
+			changedPaths[event.Path] = struct{}{}
+			timer.Reset(debounceDuration)
+		case err, ok := <-watcher.Errors():
+			if !ok {
+				return
+			}
+			logger.WarnContext(ctx, "file watcher error", xslog.ErrorAttr(err))
+			if errors.Is(err, ErrEventOverflow) {
+				timer.Reset(debounceDuration)
+			}
+		case <-timer.C:
+			onChanges(ctx, slices.Sorted(maps.Keys(changedPaths)))
+			clear(changedPaths)
+		}
+	}
 }

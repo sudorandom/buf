@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -72,7 +71,6 @@ func runWatch(ctx context.Context, container appext.Container, runner *runner) e
 		runner:          runner,
 		watcher:         watcher,
 		configFilePaths: slices.DeleteFunc(configFilePaths, func(path string) bool { return path == "" }),
-		watchedDirPaths: make(map[string]struct{}),
 	}
 	return watchRunner.run(ctx)
 }
@@ -86,10 +84,6 @@ type watchRunner struct {
 	watcher   filewatch.Watcher
 	// configFilePaths are the absolute paths of the template and config files given as flags.
 	configFilePaths []string
-	// watchedDirPaths are the absolute paths of the directories added to the watcher.
-	watchedDirPaths map[string]struct{}
-	// pluginOutPaths are the absolute paths that plugins write to, from the last template read.
-	pluginOutPaths []string
 }
 
 func (w *watchRunner) run(ctx context.Context) error {
@@ -108,38 +102,19 @@ func (w *watchRunner) run(ctx context.Context) error {
 	if ctx.Err() == nil {
 		w.container.Logger().InfoContext(ctx, "watching for changes")
 	}
-
-	// debounceChan is nil, and so never selected, while no change is pending.
-	var debounceChan <-chan time.Time
-	changedPaths := make(map[string]struct{})
-	for ctx.Err() == nil {
-		select {
-		case <-ctx.Done():
-		case event, ok := <-w.watcher.Events():
-			if !ok {
-				return nil
-			}
-			if !isRelevantEvent(w.configFilePaths, event) {
-				continue
-			}
-			changedPaths[event.Path] = struct{}{}
-			debounceChan = time.After(watchDebounceDuration)
-		case err, ok := <-w.watcher.Errors():
-			if !ok {
-				return nil
-			}
-			w.container.Logger().WarnContext(ctx, "file watcher error", xslog.ErrorAttr(err))
-			if errors.Is(err, filewatch.ErrEventOverflow) {
-				// Changes were dropped, so any watched file may have changed.
-				debounceChan = time.After(watchDebounceDuration)
-			}
-		case <-debounceChan:
-			debounceChan = nil
-			logChanges(ctx, w.container.Logger(), slices.Sorted(maps.Keys(changedPaths)))
-			clear(changedPaths)
+	filewatch.Run(
+		ctx,
+		w.container.Logger(),
+		w.watcher,
+		watchDebounceDuration,
+		func(event filewatch.Event) bool {
+			return isRelevantEvent(w.configFilePaths, event)
+		},
+		func(ctx context.Context, changedPaths []string) {
+			logChanges(ctx, w.container.Logger(), changedPaths)
 			w.runOnce(ctx)
-		}
-	}
+		},
+	)
 	return nil
 }
 
@@ -174,8 +149,7 @@ func (w *watchRunner) updateWatchesForTemplate(ctx context.Context) (bufconfig.B
 	if err != nil {
 		return nil, nil, err
 	}
-	w.pluginOutPaths = pluginOutPaths
-	if err := w.updateExcludeDirPaths(); err != nil {
+	if err := w.watcher.SetExcludeDirPaths(pluginOutPaths...); err != nil {
 		return nil, nil, err
 	}
 	inputDirPaths, err := getLocalInputDirPaths(ctx, w.container.Logger(), w.runner.input, bufGenYAMLFile)
@@ -208,47 +182,11 @@ func (w *watchRunner) addInputDirPaths(ctx context.Context, inputDirPaths []stri
 }
 
 func (w *watchRunner) addDirPaths(ctx context.Context, dirPaths []string) {
-	var newDirPaths []string
 	for _, dirPath := range dirPaths {
-		if _, ok := w.watchedDirPaths[dirPath]; ok {
-			continue
-		}
-		w.watchedDirPaths[dirPath] = struct{}{}
-		newDirPaths = append(newDirPaths, dirPath)
-	}
-	if len(newDirPaths) == 0 {
-		return
-	}
-	// Exclusions must account for the new directories before they are walked.
-	if err := w.updateExcludeDirPaths(); err != nil {
-		w.container.Logger().WarnContext(ctx, "cannot update excluded directories", xslog.ErrorAttr(err))
-	}
-	for _, dirPath := range newDirPaths {
 		if err := w.watcher.AddDirPath(dirPath); err != nil {
-			delete(w.watchedDirPaths, dirPath)
 			w.container.Logger().WarnContext(ctx, "cannot watch directory", xslog.ErrorAttr(err))
 		}
 	}
-}
-
-// updateExcludeDirPaths excludes the plugin output directories, except those
-// that contain a watched directory, as with out: . and a module at the root.
-func (w *watchRunner) updateExcludeDirPaths() error {
-	var excludeDirPaths []string
-	for _, pluginOutPath := range w.pluginOutPaths {
-		normalizedPluginOutPath := normalpath.Normalize(pluginOutPath)
-		containsWatchedDirPath := false
-		for watchedDirPath := range w.watchedDirPaths {
-			if normalpath.EqualsOrContainsPath(normalizedPluginOutPath, normalpath.Normalize(watchedDirPath), normalpath.Absolute) {
-				containsWatchedDirPath = true
-				break
-			}
-		}
-		if !containsWatchedDirPath {
-			excludeDirPaths = append(excludeDirPaths, pluginOutPath)
-		}
-	}
-	return w.watcher.SetExcludeDirPaths(excludeDirPaths...)
 }
 
 // addWorkspacePaths watches the configuration files and module directories
@@ -270,7 +208,7 @@ func (w *watchRunner) addWorkspacePaths(ctx context.Context, dirPath string) boo
 		bufconfig.DefaultBufWorkYAMLFileName,
 	} {
 		if err := w.watcher.AddFilePath(filepath.Join(workspaceDirPath, fileName)); err != nil {
-			w.container.Logger().DebugContext(ctx, "cannot watch file", xslog.ErrorAttr(err))
+			w.container.Logger().WarnContext(ctx, "cannot watch file", xslog.ErrorAttr(err))
 		}
 	}
 	moduleDirPaths := getWorkspaceModuleDirPaths(workspaceDirPath, controllingWorkspace, w.getConfigOverrideBufYAMLFile(ctx))
