@@ -51,8 +51,8 @@ type Watcher interface {
 	// are not followed. If the directory itself is a symbolic link, it is
 	// resolved and changes are reported with the resolved path.
 	AddDirPath(dirPath string) error
-	// AddFilePath watches the single file, which does not need to exist yet.
-	// Adding it again re-establishes the watch if its directory was recreated.
+	// AddFilePath watches the single file, which does not need to exist yet,
+	// nor does its directory.
 	AddFilePath(filePath string) error
 	// SetExcludeDirPaths replaces the set of directories within which changes
 	// are not reported. A directory that contains a watched directory is not

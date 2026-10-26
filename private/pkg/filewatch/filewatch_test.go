@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/stretchr/testify/require"
 )
 
@@ -283,12 +284,11 @@ func TestWatchFilePathParentRecreated(t *testing.T) {
 	watcher := newTestWatcher(t)
 	require.NoError(t, watcher.AddFilePath(filePath))
 
-	// The underlying watch is lost with the directory, and so adding the
-	// file again once the directory is recreated must establish it again.
+	// The underlying watch is lost with the directory, and is established
+	// again once the directory is recreated.
 	require.NoError(t, os.RemoveAll(subDirPath))
 	drainEvents(t, watcher)
 	require.NoError(t, os.Mkdir(subDirPath, 0700))
-	require.NoError(t, watcher.AddFilePath(filePath))
 	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
 	requireEventForPath(t, watcher, filePath)
 }
@@ -334,6 +334,32 @@ func TestRun(t *testing.T) {
 	case <-time.After(eventTimeout):
 		require.Fail(t, "timed out waiting for Run to return")
 	}
+}
+
+func TestIgnoresEventWithoutName(t *testing.T) {
+	t.Parallel()
+	dirPath := t.TempDir()
+	watcher, err := newWatcher(slog.New(slog.DiscardHandler))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, watcher.Close())
+	})
+	require.NoError(t, watcher.AddDirPath(dirPath))
+	require.NoError(t, watcher.SetExcludeDirPaths(filepath.Join(dirPath, "gen")))
+
+	// kqueue may report such an event, whose relative path must not be
+	// matched against the excluded directories, as that never terminates.
+	doneChan := make(chan struct{})
+	go func() {
+		defer close(doneChan)
+		watcher.handleFsnotifyEvent(fsnotify.Event{Name: "", Op: fsnotify.Create})
+	}()
+	select {
+	case <-doneChan:
+	case <-time.After(eventTimeout):
+		require.Fail(t, "timed out handling event without name")
+	}
+	requireNoEvent(t, watcher)
 }
 
 func TestClose(t *testing.T) {

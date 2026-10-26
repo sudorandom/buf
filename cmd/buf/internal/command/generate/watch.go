@@ -87,6 +87,11 @@ type watchRunner struct {
 }
 
 func (w *watchRunner) run(ctx context.Context) error {
+	for _, configFilePath := range w.configFilePaths {
+		if err := w.watcher.AddFilePath(configFilePath); err != nil {
+			return err
+		}
+	}
 	bufGenYAMLFile, inputDirPaths, err := w.updateWatchesForTemplate(ctx)
 	if err != nil {
 		return err
@@ -131,16 +136,9 @@ func (w *watchRunner) runOnce(ctx context.Context) {
 	w.generate(ctx, bufGenYAMLFile)
 }
 
-// updateWatchesForTemplate watches the template and config files, reads the
-// template, updates the excluded output directories, and returns the template
-// and the directories of the local inputs.
+// updateWatchesForTemplate reads the template, updates the excluded output
+// directories, and returns the template and the directories of the local inputs.
 func (w *watchRunner) updateWatchesForTemplate(ctx context.Context) (bufconfig.BufGenYAMLFile, []string, error) {
-	// Added on every run, as a watch is lost when the file's directory is recreated.
-	for _, configFilePath := range w.configFilePaths {
-		if err := w.watcher.AddFilePath(configFilePath); err != nil {
-			return nil, nil, err
-		}
-	}
 	bufGenYAMLFile, err := readBufGenYAMLFile(ctx, w.runner.storageosProvider, w.runner.flags.Template)
 	if err != nil {
 		return nil, nil, err

@@ -31,6 +31,12 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// watcher keeps the set of directories watched in fsnotifyWatcher in sync with
+// the directories and files it was asked to watch.
+//
+// The directories and files asked for are the only state. The directories to
+// watch are derived from them by reconcile, which runs after every change to
+// them and after every change to a directory on disk.
 type watcher struct {
 	logger          *slog.Logger
 	fsnotifyWatcher *fsnotify.Watcher
@@ -43,25 +49,18 @@ type watcher struct {
 	closeErr  error
 	waitGroup sync.WaitGroup
 
-	lock sync.RWMutex
-	// rootDirPaths are the directories added with AddDirPath.
+	// lock is held while reconciling, and is never held while sending on
+	// eventChan or errChan, as the receiver may be calling a method.
+	lock sync.Mutex
+	// rootDirPaths are the absolute directories added with AddDirPath.
 	rootDirPaths map[string]struct{}
-	// recursiveDirPaths are the directories whose direct children are reported,
-	// and whose new subdirectories are watched automatically.
-	//
-	// This includes rootDirPaths and their subdirectories that are not excluded.
-	recursiveDirPaths map[string]struct{}
-	// pendingDirPaths are the non-existent directories (rootDirPaths or their
-	// missing ancestors) whose parent directories are watched for their creation.
-	pendingDirPaths map[string]struct{}
-	// filePaths are the individual files that are reported.
+	// filePaths are the absolute files added with AddFilePath.
 	filePaths map[string]struct{}
 	// excludeDirPaths are the directories given to SetExcludeDirPaths, in
 	// normalpath form for use with normalpath.EqualsOrContainsPath.
 	excludeDirPaths []string
-	// activeExcludeDirPaths are the excludeDirPaths that apply, which are those
-	// that do not contain a root directory.
-	activeExcludeDirPaths []string
+	// watchedDirPaths are the directories currently watched in fsnotifyWatcher.
+	watchedDirPaths map[string]struct{}
 }
 
 func newWatcher(logger *slog.Logger) (*watcher, error) {
@@ -70,15 +69,14 @@ func newWatcher(logger *slog.Logger) (*watcher, error) {
 		return nil, fmt.Errorf("create file watcher: %w", err)
 	}
 	watcher := &watcher{
-		logger:            logger,
-		fsnotifyWatcher:   fsnotifyWatcher,
-		eventChan:         make(chan Event, 64),
-		errChan:           make(chan error),
-		closeChan:         make(chan struct{}),
-		rootDirPaths:      make(map[string]struct{}),
-		recursiveDirPaths: make(map[string]struct{}),
-		pendingDirPaths:   make(map[string]struct{}),
-		filePaths:         make(map[string]struct{}),
+		logger:          logger,
+		fsnotifyWatcher: fsnotifyWatcher,
+		eventChan:       make(chan Event, 64),
+		errChan:         make(chan error),
+		closeChan:       make(chan struct{}),
+		rootDirPaths:    make(map[string]struct{}),
+		filePaths:       make(map[string]struct{}),
+		watchedDirPaths: make(map[string]struct{}),
 	}
 	watcher.waitGroup.Go(watcher.run)
 	return watcher, nil
@@ -98,24 +96,13 @@ func (w *watcher) AddDirPath(dirPath string) error {
 		}
 	}
 	w.lock.Lock()
+	defer w.lock.Unlock()
 	if _, ok := w.rootDirPaths[absDirPath]; ok {
-		w.lock.Unlock()
 		return nil
 	}
 	w.rootDirPaths[absDirPath] = struct{}{}
-	// An excluded directory that contains the new root no longer applies.
-	excludesChanged := w.updateActiveExcludeDirPathsLocked()
-	w.lock.Unlock()
-	if excludesChanged {
-		err = w.watchRootDirPaths()
-	} else {
-		err = w.watchRootDirPath(absDirPath, false)
-	}
-	if err != nil {
-		// The root may be added again to retry.
-		w.lock.Lock()
+	if _, _, err := w.reconcileLocked(false); err != nil {
 		delete(w.rootDirPaths, absDirPath)
-		w.lock.Unlock()
 		return err
 	}
 	return nil
@@ -128,101 +115,32 @@ func (w *watcher) AddFilePath(filePath string) error {
 	}
 	w.lock.Lock()
 	defer w.lock.Unlock()
-	// The directory is always added, as its watch is lost when it is removed.
-	if err := w.fsnotifyWatcher.Add(filepath.Dir(absFilePath)); err != nil {
-		return fmt.Errorf("watch %s: %w", absFilePath, err)
+	if _, ok := w.filePaths[absFilePath]; ok {
+		return nil
 	}
 	w.filePaths[absFilePath] = struct{}{}
+	if _, _, err := w.reconcileLocked(false); err != nil {
+		delete(w.filePaths, absFilePath)
+		return err
+	}
 	return nil
 }
 
 func (w *watcher) SetExcludeDirPaths(dirPaths ...string) error {
-	normalizedExcludeDirPaths := make([]string, 0, len(dirPaths))
+	excludeDirPaths := make([]string, 0, len(dirPaths))
 	for _, dirPath := range dirPaths {
 		absDirPath, err := filepath.Abs(dirPath)
 		if err != nil {
 			return err
 		}
-		normalizedExcludeDirPaths = append(normalizedExcludeDirPaths, normalpath.Normalize(absDirPath))
+		excludeDirPaths = append(excludeDirPaths, normalpath.Normalize(absDirPath))
 	}
-	slices.Sort(normalizedExcludeDirPaths)
+	slices.Sort(excludeDirPaths)
 	w.lock.Lock()
-	w.excludeDirPaths = slices.Compact(normalizedExcludeDirPaths)
-	changed := w.updateActiveExcludeDirPathsLocked()
-	w.lock.Unlock()
-	if !changed {
-		return nil
-	}
-	return w.watchRootDirPaths()
-}
-
-// updateActiveExcludeDirPathsLocked recomputes the excluded directories that
-// apply and stops watching the directories that are now excluded.
-//
-// It returns whether the active excluded directories changed.
-func (w *watcher) updateActiveExcludeDirPathsLocked() bool {
-	var activeExcludeDirPaths []string
-	for _, excludeDirPath := range w.excludeDirPaths {
-		if !w.containsRootDirPathLocked(excludeDirPath) {
-			activeExcludeDirPaths = append(activeExcludeDirPaths, excludeDirPath)
-		}
-	}
-	if slices.Equal(w.activeExcludeDirPaths, activeExcludeDirPaths) {
-		return false
-	}
-	w.activeExcludeDirPaths = activeExcludeDirPaths
-	for dirPath := range w.recursiveDirPaths {
-		if !w.isExcludedPathLocked(dirPath) {
-			continue
-		}
-		delete(w.recursiveDirPaths, dirPath)
-		w.removeUnneededWatchLocked(dirPath)
-	}
-	return true
-}
-
-func (w *watcher) containsRootDirPathLocked(normalizedDirPath string) bool {
-	for rootDirPath := range w.rootDirPaths {
-		if normalpath.EqualsOrContainsPath(normalizedDirPath, normalpath.Normalize(rootDirPath), normalpath.Absolute) {
-			return true
-		}
-	}
-	return false
-}
-
-// watchRootDirPaths watches all root directories again, as after the excluded
-// directories change. Directories that are already watched are skipped.
-func (w *watcher) watchRootDirPaths() error {
-	w.lock.RLock()
-	rootDirPaths := slices.Sorted(maps.Keys(w.rootDirPaths))
-	w.lock.RUnlock()
-	for _, rootDirPath := range rootDirPaths {
-		if err := w.watchRootDirPath(rootDirPath, false); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// removeUnneededWatchLocked stops watching dirPath in fsnotifyWatcher if it is
-// no longer needed for recursive watching, a watched file, or a pending directory.
-func (w *watcher) removeUnneededWatchLocked(dirPath string) {
-	if _, ok := w.recursiveDirPaths[dirPath]; ok {
-		return
-	}
-	for filePath := range w.filePaths {
-		if filepath.Dir(filePath) == dirPath {
-			return
-		}
-	}
-	for pendingDirPath := range w.pendingDirPaths {
-		if filepath.Dir(pendingDirPath) == dirPath {
-			return
-		}
-	}
-	if err := w.fsnotifyWatcher.Remove(dirPath); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
-		w.logger.Debug("cannot unwatch directory", slog.String("path", dirPath), xslog.ErrorAttr(err))
-	}
+	defer w.lock.Unlock()
+	w.excludeDirPaths = slices.Compact(excludeDirPaths)
+	_, _, err := w.reconcileLocked(false)
+	return err
 }
 
 func (w *watcher) Events() <-chan Event {
@@ -242,7 +160,7 @@ func (w *watcher) Close() error {
 	return w.closeErr
 }
 
-// run forwards events from the underlying fsnotify.Watcher until it is closed.
+// run handles events from the underlying fsnotify.Watcher until it is closed.
 func (w *watcher) run() {
 	defer close(w.eventChan)
 	defer close(w.errChan)
@@ -269,66 +187,271 @@ func (w *watcher) run() {
 }
 
 func (w *watcher) handleFsnotifyEvent(fsnotifyEvent fsnotify.Event) {
-	if fsnotifyEvent.Op == fsnotify.Chmod {
-		return
-	}
 	path := filepath.Clean(fsnotifyEvent.Name)
-	if !w.isReportedPath(path) {
+	// kqueue may report an event without a name for a descriptor it no longer knows.
+	if fsnotifyEvent.Op == fsnotify.Chmod || !filepath.IsAbs(path) {
 		return
 	}
 	switch {
 	case fsnotifyEvent.Has(fsnotify.Create):
-		w.handleCreate(path)
+		if fileInfo, err := os.Stat(path); err == nil && fileInfo.IsDir() {
+			// The directory is reported through the files within it.
+			w.reconcile()
+			return
+		}
 	case fsnotifyEvent.Has(fsnotify.Remove), fsnotifyEvent.Has(fsnotify.Rename):
-		isRemovedDir, hadPendingDir := w.removeDirPathRecursive(path)
-		if isRemovedDir {
-			w.sendEvent(Event{Path: path, IsRemovedDir: true})
-			if w.isRecursiveDirPath(filepath.Dir(path)) {
-				if fileInfo, err := os.Stat(path); err == nil && fileInfo.IsDir() {
-					w.handleCreate(path)
-				}
+		if w.isWatchedDirPath(path) {
+			// Reported by reconcile, which may also have reported it already
+			// for a directory that was removed along with it.
+			w.reconcile()
+			return
+		}
+	}
+	if w.isReportedPath(path) {
+		w.sendEvent(Event{Path: path})
+	}
+}
+
+// reconcile updates the watched directories after a change on disk. It
+// reports the watched directories that were removed, and the files within
+// the directories that are newly watched, as they may have been created
+// before the directory was watched.
+func (w *watcher) reconcile() {
+	w.lock.Lock()
+	removedDirPaths, newDirPaths, err := w.reconcileLocked(true)
+	w.lock.Unlock()
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		w.sendError(err)
+	}
+	for _, dirPath := range removedDirPaths {
+		w.sendEvent(Event{Path: dirPath, IsRemovedDir: true})
+	}
+	for _, dirPath := range newDirPaths {
+		dirEntries, err := os.ReadDir(dirPath)
+		if err != nil {
+			// Removed again already, which is reported by its own event.
+			continue
+		}
+		for _, dirEntry := range dirEntries {
+			if dirEntry.IsDir() {
+				continue
 			}
-		} else if !hadPendingDir {
-			w.sendEvent(Event{Path: path})
-		}
-		if isRemovedDir || hadPendingDir {
-			w.watchMissingRootDirPaths()
-		}
-	default:
-		if !w.isPendingParentDirPath(path) {
-			w.sendEvent(Event{Path: path})
+			if path := filepath.Join(dirPath, dirEntry.Name()); w.isReportedPath(path) {
+				w.sendEvent(Event{Path: path})
+			}
 		}
 	}
 }
 
-// handleCreate watches a directory created within a recursively watched directory
-// or at a pending root directory path, and reports the files already within it.
-func (w *watcher) handleCreate(path string) {
-	if w.takePendingDirPath(path) {
-		w.watchMissingRootDirPaths()
-		if !w.isFilePath(path) {
-			return
+// reconcileLocked watches the directories that should be watched, and stops
+// watching the others.
+//
+// Watches are dropped by fsnotifyWatcher when their directories are removed
+// or renamed. If sync is true, as when called for an event, the watched
+// directories are first synced with fsnotifyWatcher, so that a directory
+// created again is watched again, and the reported directories that were
+// removed are returned. Otherwise, a watched directory that no longer exists
+// is left for its event to report.
+//
+// It returns the removed directories and the newly watched directories.
+func (w *watcher) reconcileLocked(sync bool) ([]string, []string, error) {
+	var previouslyWatchedDirPaths map[string]struct{}
+	if sync {
+		previouslyWatchedDirPaths = w.watchedDirPaths
+		w.watchedDirPaths = make(map[string]struct{})
+		for _, dirPath := range w.fsnotifyWatcher.WatchList() {
+			w.watchedDirPaths[filepath.Clean(dirPath)] = struct{}{}
 		}
 	}
-	fileInfo, err := os.Stat(path)
-	if err != nil || !fileInfo.IsDir() {
-		// A file, or a path that was removed again already.
-		w.sendEvent(Event{Path: path})
-		return
+	var errs []error
+	var newDirPaths []string
+	desiredDirPaths := make(map[string]struct{})
+	activeExcludeDirPaths := w.activeExcludeDirPathsLocked()
+	for _, rootDirPath := range slices.Sorted(maps.Keys(w.rootDirPaths)) {
+		if err := w.watchDirPathLocked(rootDirPath, true, activeExcludeDirPaths, desiredDirPaths, &newDirPaths); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	if !w.isRecursiveDirPath(filepath.Dir(path)) || strings.HasPrefix(filepath.Base(path), ".") {
-		return
+	for _, filePath := range slices.Sorted(maps.Keys(w.filePaths)) {
+		if err := w.watchDirPathLocked(filepath.Dir(filePath), false, nil, desiredDirPaths, &newDirPaths); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	// The directory may be removed again before it is walked.
-	if err := w.addDirPathRecursive(path); err != nil {
+	for dirPath := range w.watchedDirPaths {
+		if _, ok := desiredDirPaths[dirPath]; ok {
+			continue
+		}
+		if !sync {
+			if _, err := os.Stat(dirPath); err != nil {
+				continue
+			}
+		}
+		// The watch is already gone if the directory was removed.
+		if err := w.fsnotifyWatcher.Remove(dirPath); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
+			w.logger.Debug("cannot unwatch directory", slog.String("path", dirPath), xslog.ErrorAttr(err))
+		}
+		delete(w.watchedDirPaths, dirPath)
+	}
+	var removedDirPaths []string
+	for dirPath := range previouslyWatchedDirPaths {
+		if _, ok := desiredDirPaths[dirPath]; ok {
+			continue
+		}
+		if _, err := os.Stat(dirPath); err == nil || !w.isReportedPathLocked(dirPath) {
+			continue
+		}
+		removedDirPaths = append(removedDirPaths, dirPath)
+	}
+	slices.Sort(removedDirPaths)
+	return removedDirPaths, newDirPaths, errors.Join(errs...)
+}
+
+// watchDirPathLocked watches dirPath, and its subdirectories if recursive, or
+// watches its nearest existing ancestor for its creation if it does not exist.
+//
+// Every directory that should be watched is added to desiredDirPaths, and
+// every directory that was not watched before is appended to newDirPaths.
+func (w *watcher) watchDirPathLocked(
+	dirPath string,
+	recursive bool,
+	activeExcludeDirPaths []string,
+	desiredDirPaths map[string]struct{},
+	newDirPaths *[]string,
+) error {
+	for {
+		err := w.walkDirPathLocked(dirPath, recursive, activeExcludeDirPaths, desiredDirPaths, newDirPaths)
 		if !errors.Is(err, fs.ErrNotExist) {
-			w.sendError(err)
+			return err
 		}
-		return
+		ancestorDirPath := nearestExistingAncestorDirPath(dirPath)
+		if ancestorDirPath == "" {
+			return nil
+		}
+		_, wasWatched := w.watchedDirPaths[ancestorDirPath]
+		if err := w.addWatchLocked(ancestorDirPath, desiredDirPaths, newDirPaths); err != nil {
+			return err
+		}
+		if wasWatched {
+			// Its creation will be reported.
+			return nil
+		}
+		// It may have been created before the ancestor was watched.
 	}
-	if err := w.sendEventsForFilesInDirPath(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		w.sendError(err)
+}
+
+// walkDirPathLocked watches dirPath and, if recursive, its subdirectories
+// that are not hidden or excluded. Each directory is watched before it is
+// read, so that no subdirectory created in the meantime is missed.
+func (w *watcher) walkDirPathLocked(
+	dirPath string,
+	recursive bool,
+	activeExcludeDirPaths []string,
+	desiredDirPaths map[string]struct{},
+	newDirPaths *[]string,
+) error {
+	return filepath.WalkDir(
+		dirPath,
+		func(path string, dirEntry fs.DirEntry, err error) error {
+			if err != nil {
+				if path == dirPath {
+					return err
+				}
+				if !errors.Is(err, fs.ErrNotExist) {
+					w.logger.Warn("skipping unreadable directory", slog.String("path", path), xslog.ErrorAttr(err))
+				}
+				return filepath.SkipDir
+			}
+			if !dirEntry.IsDir() {
+				if path == dirPath {
+					return fmt.Errorf("watch %s: not a directory", path)
+				}
+				return nil
+			}
+			if path != dirPath {
+				if !recursive {
+					return filepath.SkipDir
+				}
+				if strings.HasPrefix(dirEntry.Name(), ".") || isExcludedPath(path, activeExcludeDirPaths) {
+					return filepath.SkipDir
+				}
+			}
+			if err := w.addWatchLocked(path, desiredDirPaths, newDirPaths); err != nil {
+				if path == dirPath {
+					return err
+				}
+				if !errors.Is(err, fs.ErrNotExist) {
+					w.logger.Warn("cannot watch directory", slog.String("path", path), xslog.ErrorAttr(err))
+				}
+				return filepath.SkipDir
+			}
+			return nil
+		},
+	)
+}
+
+func (w *watcher) addWatchLocked(dirPath string, desiredDirPaths map[string]struct{}, newDirPaths *[]string) error {
+	desiredDirPaths[dirPath] = struct{}{}
+	if _, ok := w.watchedDirPaths[dirPath]; ok {
+		return nil
 	}
+	if err := w.fsnotifyWatcher.Add(dirPath); err != nil {
+		return fmt.Errorf("watch %s: %w", dirPath, err)
+	}
+	w.watchedDirPaths[dirPath] = struct{}{}
+	*newDirPaths = append(*newDirPaths, dirPath)
+	return nil
+}
+
+// activeExcludeDirPathsLocked returns the excluded directories that apply,
+// which are those that do not contain a root directory.
+func (w *watcher) activeExcludeDirPathsLocked() []string {
+	var activeExcludeDirPaths []string
+	for _, excludeDirPath := range w.excludeDirPaths {
+		if !w.containsRootDirPathLocked(excludeDirPath) {
+			activeExcludeDirPaths = append(activeExcludeDirPaths, excludeDirPath)
+		}
+	}
+	return activeExcludeDirPaths
+}
+
+func (w *watcher) containsRootDirPathLocked(normalizedDirPath string) bool {
+	for rootDirPath := range w.rootDirPaths {
+		if normalpath.EqualsOrContainsPath(normalizedDirPath, normalpath.Normalize(rootDirPath), normalpath.Absolute) {
+			return true
+		}
+	}
+	return false
+}
+
+// isReportedPath returns true if a change to path is reported: it is a
+// watched file, or it is within a root directory and not excluded.
+func (w *watcher) isReportedPath(path string) bool {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	return w.isReportedPathLocked(path)
+}
+
+func (w *watcher) isReportedPathLocked(path string) bool {
+	if _, ok := w.filePaths[path]; ok {
+		return true
+	}
+	if isExcludedPath(path, w.activeExcludeDirPathsLocked()) {
+		return false
+	}
+	normalizedPath := normalpath.Normalize(path)
+	for rootDirPath := range w.rootDirPaths {
+		if normalpath.EqualsOrContainsPath(normalpath.Normalize(rootDirPath), normalizedPath, normalpath.Absolute) {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *watcher) isWatchedDirPath(dirPath string) bool {
+	w.lock.Lock()
+	defer w.lock.Unlock()
+	_, ok := w.watchedDirPaths[dirPath]
+	return ok
 }
 
 func (w *watcher) sendEvent(event Event) {
@@ -345,268 +468,30 @@ func (w *watcher) sendError(err error) {
 	}
 }
 
-func (w *watcher) isReportedPath(path string) bool {
-	w.lock.RLock()
-	defer w.lock.RUnlock()
-	if _, ok := w.filePaths[path]; ok {
-		return true
-	}
-	if _, ok := w.pendingDirPaths[path]; ok {
-		return true
-	}
-	for pendingDirPath := range w.pendingDirPaths {
-		if filepath.Dir(pendingDirPath) == path {
-			return true
-		}
-	}
-	if w.isExcludedPathLocked(path) {
-		return false
-	}
-	if _, ok := w.recursiveDirPaths[filepath.Dir(path)]; ok {
-		return true
-	}
-	// A recursively watched directory itself may be removed or renamed.
-	_, ok := w.recursiveDirPaths[path]
-	return ok
-}
-
-func (w *watcher) isFilePath(path string) bool {
-	w.lock.RLock()
-	defer w.lock.RUnlock()
-	_, ok := w.filePaths[path]
-	return ok
-}
-
-func (w *watcher) isRecursiveDirPath(dirPath string) bool {
-	w.lock.RLock()
-	defer w.lock.RUnlock()
-	_, ok := w.recursiveDirPaths[dirPath]
-	return ok
-}
-
-func (w *watcher) isPendingParentDirPath(dirPath string) bool {
-	w.lock.RLock()
-	defer w.lock.RUnlock()
-	for pendingDirPath := range w.pendingDirPaths {
-		if filepath.Dir(pendingDirPath) == dirPath {
-			return true
-		}
-	}
-	return false
-}
-
-// watchRootDirPath watches absDirPath and its subdirectories if it exists, or
-// watches its nearest existing ancestor for its creation if it does not.
-//
-// If sendEvents is true and absDirPath exists, an Event is sent for each file
-// already within it.
-func (w *watcher) watchRootDirPath(absDirPath string, sendEvents bool) error {
-	for {
-		err := w.addDirPathRecursive(absDirPath)
-		if err == nil {
-			if sendEvents {
-				if err := w.sendEventsForFilesInDirPath(absDirPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-					return err
-				}
-			}
-			return nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		watchPath := absDirPath
-		for {
-			parentDirPath := filepath.Dir(watchPath)
-			if parentDirPath == watchPath {
-				return err
-			}
-			addErr := w.addPendingDirPath(watchPath)
-			if addErr == nil {
-				break
-			}
-			if !errors.Is(addErr, fs.ErrNotExist) {
-				return addErr
-			}
-			watchPath = parentDirPath
-		}
-		// If watchPath was created before its parent was watched, try again.
-		if _, statErr := os.Stat(watchPath); statErr != nil {
-			if errors.Is(statErr, fs.ErrNotExist) {
-				return nil
-			}
-			return statErr
-		}
-		w.takePendingDirPath(watchPath)
-	}
-}
-
-func (w *watcher) watchMissingRootDirPaths() {
-	for _, rootDirPath := range w.missingRootDirPaths() {
-		if err := w.watchRootDirPath(rootDirPath, true); err != nil {
-			w.sendError(err)
-		}
-	}
-}
-
-func (w *watcher) missingRootDirPaths() []string {
-	w.lock.RLock()
-	defer w.lock.RUnlock()
-	var dirPaths []string
-	for rootDirPath := range w.rootDirPaths {
-		if _, ok := w.recursiveDirPaths[rootDirPath]; !ok && !w.isExcludedPathLocked(rootDirPath) {
-			dirPaths = append(dirPaths, rootDirPath)
-		}
-	}
-	slices.Sort(dirPaths)
-	return dirPaths
-}
-
-func (w *watcher) addPendingDirPath(dirPath string) error {
-	w.lock.Lock()
-	defer w.lock.Unlock()
-	if err := w.fsnotifyWatcher.Add(filepath.Dir(dirPath)); err != nil {
-		return fmt.Errorf("watch %s: %w", dirPath, err)
-	}
-	w.pendingDirPaths[dirPath] = struct{}{}
-	return nil
-}
-
-func (w *watcher) takePendingDirPath(dirPath string) bool {
-	w.lock.Lock()
-	defer w.lock.Unlock()
-	if _, ok := w.pendingDirPaths[dirPath]; !ok {
-		return false
-	}
-	delete(w.pendingDirPaths, dirPath)
-	w.removeUnneededWatchLocked(filepath.Dir(dirPath))
-	return true
-}
-
-// addDirPathRecursive watches absDirPath and all of its subdirectories.
-// The lock is held per directory so that events keep being handled during the walk.
-func (w *watcher) addDirPathRecursive(absDirPath string) error {
-	return filepath.WalkDir(
-		absDirPath,
-		func(path string, dirEntry fs.DirEntry, err error) error {
-			if err != nil {
-				if path == absDirPath {
-					return fmt.Errorf("watch %s: %w", absDirPath, err)
-				}
-				if !errors.Is(err, fs.ErrNotExist) {
-					w.logger.Warn(
-						"skipping unreadable directory",
-						slog.String("path", path),
-						xslog.ErrorAttr(err),
-					)
-				}
-				return filepath.SkipDir
-			}
-			if !dirEntry.IsDir() {
-				return nil
-			}
-			if path != absDirPath && strings.HasPrefix(dirEntry.Name(), ".") {
-				return filepath.SkipDir
-			}
-			if err := w.addDirPath(path); err != nil {
-				if path == absDirPath || errors.Is(err, filepath.SkipDir) {
-					return err
-				}
-				if !errors.Is(err, fs.ErrNotExist) {
-					w.logger.Warn(
-						"skipping unreadable directory",
-						slog.String("path", path),
-						xslog.ErrorAttr(err),
-					)
-				}
-				return filepath.SkipDir
-			}
-			return nil
-		},
-	)
-}
-
-// addDirPath watches the single directory absDirPath.
-//
-// It returns filepath.SkipDir if the directory is excluded.
-func (w *watcher) addDirPath(absDirPath string) error {
-	w.lock.Lock()
-	defer w.lock.Unlock()
-	if w.isExcludedPathLocked(absDirPath) {
-		return filepath.SkipDir
-	}
-	if _, ok := w.recursiveDirPaths[absDirPath]; ok {
-		return nil
-	}
-	if err := w.fsnotifyWatcher.Add(absDirPath); err != nil {
-		return fmt.Errorf("watch %s: %w", absDirPath, err)
-	}
-	w.recursiveDirPaths[absDirPath] = struct{}{}
-	return nil
-}
-
-// removeDirPathRecursive stops watching absDirPath and all of its subdirectories.
-//
-// It returns whether absDirPath was a recursively watched directory and whether
-// any pending directory watch under absDirPath was removed.
-func (w *watcher) removeDirPathRecursive(absDirPath string) (bool, bool) {
-	normalizedDirPath := normalpath.Normalize(absDirPath)
-	w.lock.Lock()
-	defer w.lock.Unlock()
-	_, isRemovedDir := w.recursiveDirPaths[absDirPath]
-	if isRemovedDir {
-		for dirPath := range w.recursiveDirPaths {
-			if !normalpath.EqualsOrContainsPath(normalizedDirPath, normalpath.Normalize(dirPath), normalpath.Absolute) {
-				continue
-			}
-			delete(w.recursiveDirPaths, dirPath)
-			w.removeUnneededWatchLocked(dirPath)
-		}
-	}
-	hadPendingDir := false
-	for pendingDirPath := range w.pendingDirPaths {
-		if !normalpath.EqualsOrContainsPath(normalizedDirPath, normalpath.Normalize(filepath.Dir(pendingDirPath)), normalpath.Absolute) {
-			continue
-		}
-		delete(w.pendingDirPaths, pendingDirPath)
-		w.removeUnneededWatchLocked(filepath.Dir(pendingDirPath))
-		hadPendingDir = true
-	}
-	return isRemovedDir, hadPendingDir
-}
-
-// sendEventsForFilesInDirPath sends an Event for every file within absDirPath
-// and its watched subdirectories.
-func (w *watcher) sendEventsForFilesInDirPath(absDirPath string) error {
-	return filepath.WalkDir(
-		absDirPath,
-		func(path string, dirEntry fs.DirEntry, err error) error {
-			if err != nil {
-				if path != absDirPath && errors.Is(err, fs.ErrNotExist) {
-					return nil
-				}
-				return err
-			}
-			if dirEntry.IsDir() {
-				if !w.isRecursiveDirPath(path) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			w.sendEvent(Event{Path: path})
-			return nil
-		},
-	)
-}
-
-func (w *watcher) isExcludedPathLocked(path string) bool {
-	if len(w.activeExcludeDirPaths) == 0 {
+func isExcludedPath(path string, activeExcludeDirPaths []string) bool {
+	if len(activeExcludeDirPaths) == 0 {
 		return false
 	}
 	normalizedPath := normalpath.Normalize(path)
-	for _, normalizedExcludeDirPath := range w.activeExcludeDirPaths {
-		if normalpath.EqualsOrContainsPath(normalizedExcludeDirPath, normalizedPath, normalpath.Absolute) {
+	for _, activeExcludeDirPath := range activeExcludeDirPaths {
+		if normalpath.EqualsOrContainsPath(activeExcludeDirPath, normalizedPath, normalpath.Absolute) {
 			return true
 		}
 	}
 	return false
+}
+
+// nearestExistingAncestorDirPath returns the nearest ancestor of path that
+// exists, or empty if there is none.
+func nearestExistingAncestorDirPath(path string) string {
+	for {
+		parentDirPath := filepath.Dir(path)
+		if parentDirPath == path {
+			return ""
+		}
+		if fileInfo, err := os.Stat(parentDirPath); err == nil && fileInfo.IsDir() {
+			return parentDirPath
+		}
+		path = parentDirPath
+	}
 }

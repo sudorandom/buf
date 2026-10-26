@@ -317,16 +317,13 @@ func TestWatchConfigOverrideFileDirRecreated(t *testing.T) {
 	watchTest.requireStderrContains(t, "watching for changes")
 
 	// The directory of the config file is removed and recreated, as by
-	// switching branches, which loses its watch until the next run.
+	// switching branches, and the config file is still watched.
 	require.NoError(t, os.RemoveAll(configDirPath))
 	watchTest.requireStderrContains(t, "ERROR\tgeneration failed")
 	writeTestFile(t, configFilePath, "version: v2\n")
-	writeTestFile(t, aProtoFilePath, "syntax = \"proto3\";\npackage a.v1;\nmessage A {}\n")
 	watchTest.requireStderrCount(t, "generation succeeded", 2)
-
-	// The config file is watched again.
 	writeTestFile(t, configFilePath, "version: v2\nlint:\n  use:\n    - STANDARD\n")
-	watchTest.requireStderrContains(t, changeDetectedLine(configFilePath))
+	watchTest.requireStderrCount(t, changeDetectedLine(configFilePath), 2)
 	watchTest.requireStderrCount(t, "generation succeeded", 3)
 
 	watchTest.requireStop(t)
