@@ -575,7 +575,11 @@ func run(
 	if flags.Watch {
 		return runWatch(ctx, container, runner)
 	}
-	return runner.run(ctx, container)
+	bufGenYAMLFile, err := readBufGenYAMLFile(ctx, storageosProvider, flags.Template)
+	if err != nil {
+		return err
+	}
+	return runner.run(ctx, container, bufGenYAMLFile)
 }
 
 // runner runs generation for a fixed set of flags and input.
@@ -588,12 +592,12 @@ type runner struct {
 	input             string
 }
 
-// run runs generation once.
-func (r *runner) run(ctx context.Context, container appext.Container) error {
-	bufGenYAMLFile, err := readBufGenYAMLFile(ctx, r.storageosProvider, r.flags.Template)
-	if err != nil {
-		return err
-	}
+// run runs generation once for the given template.
+func (r *runner) run(
+	ctx context.Context,
+	container appext.Container,
+	bufGenYAMLFile bufconfig.BufGenYAMLFile,
+) error {
 	images, err := getInputImages(
 		ctx,
 		r.logger,

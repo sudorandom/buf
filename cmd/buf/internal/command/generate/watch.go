@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -92,12 +93,7 @@ type watchRunner struct {
 }
 
 func (w *watchRunner) run(ctx context.Context) error {
-	for _, configFilePath := range w.configFilePaths {
-		if err := w.watcher.AddFilePath(configFilePath); err != nil {
-			return err
-		}
-	}
-	inputDirPaths, err := w.updateWatchesForTemplate(ctx)
+	bufGenYAMLFile, inputDirPaths, err := w.updateWatchesForTemplate(ctx)
 	if err != nil {
 		return err
 	}
@@ -108,14 +104,14 @@ func (w *watchRunner) run(ctx context.Context) error {
 		)
 	}
 	w.addInputDirPaths(ctx, inputDirPaths)
-	w.generate(ctx)
+	w.generate(ctx, bufGenYAMLFile)
 	if ctx.Err() == nil {
 		w.container.Logger().InfoContext(ctx, "watching for changes")
 	}
 
 	// debounceChan is nil, and so never selected, while no change is pending.
 	var debounceChan <-chan time.Time
-	var changedPaths []string
+	changedPaths := make(map[string]struct{})
 	for ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
@@ -126,20 +122,21 @@ func (w *watchRunner) run(ctx context.Context) error {
 			if !isRelevantEvent(w.configFilePaths, event) {
 				continue
 			}
-			if !slices.Contains(changedPaths, event.Path) {
-				changedPaths = append(changedPaths, event.Path)
-			}
+			changedPaths[event.Path] = struct{}{}
 			debounceChan = time.After(watchDebounceDuration)
 		case err, ok := <-w.watcher.Errors():
 			if !ok {
 				return nil
 			}
 			w.container.Logger().WarnContext(ctx, "file watcher error", xslog.ErrorAttr(err))
+			if errors.Is(err, filewatch.ErrEventOverflow) {
+				// Changes were dropped, so any watched file may have changed.
+				debounceChan = time.After(watchDebounceDuration)
+			}
 		case <-debounceChan:
 			debounceChan = nil
-			slices.Sort(changedPaths)
-			logChanges(ctx, w.container.Logger(), changedPaths)
-			changedPaths = nil
+			logChanges(ctx, w.container.Logger(), slices.Sorted(maps.Keys(changedPaths)))
+			clear(changedPaths)
 			w.runOnce(ctx)
 		}
 	}
@@ -147,7 +144,7 @@ func (w *watchRunner) run(ctx context.Context) error {
 }
 
 func (w *watchRunner) runOnce(ctx context.Context) {
-	inputDirPaths, err := w.updateWatchesForTemplate(ctx)
+	bufGenYAMLFile, inputDirPaths, err := w.updateWatchesForTemplate(ctx)
 	if ctx.Err() != nil {
 		return
 	}
@@ -156,29 +153,40 @@ func (w *watchRunner) runOnce(ctx context.Context) {
 		return
 	}
 	w.addInputDirPaths(ctx, inputDirPaths)
-	w.generate(ctx)
+	w.generate(ctx, bufGenYAMLFile)
 }
 
-// updateWatchesForTemplate reads the template, updates the excluded output
-// directories, and returns the directories of the local inputs.
-func (w *watchRunner) updateWatchesForTemplate(ctx context.Context) ([]string, error) {
+// updateWatchesForTemplate watches the template and config files, reads the
+// template, updates the excluded output directories, and returns the template
+// and the directories of the local inputs.
+func (w *watchRunner) updateWatchesForTemplate(ctx context.Context) (bufconfig.BufGenYAMLFile, []string, error) {
+	// Added on every run, as a watch is lost when the file's directory is recreated.
+	for _, configFilePath := range w.configFilePaths {
+		if err := w.watcher.AddFilePath(configFilePath); err != nil {
+			return nil, nil, err
+		}
+	}
 	bufGenYAMLFile, err := readBufGenYAMLFile(ctx, w.runner.storageosProvider, w.runner.flags.Template)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pluginOutPaths, err := getPluginOutPaths(bufGenYAMLFile, w.runner.flags.BaseOutDirPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	w.pluginOutPaths = pluginOutPaths
 	if err := w.updateExcludeDirPaths(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return getLocalInputDirPaths(ctx, w.container.Logger(), w.runner.input, bufGenYAMLFile)
+	inputDirPaths, err := getLocalInputDirPaths(ctx, w.container.Logger(), w.runner.input, bufGenYAMLFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	return bufGenYAMLFile, inputDirPaths, nil
 }
 
-func (w *watchRunner) generate(ctx context.Context) {
-	err := w.runner.run(ctx, w.container)
+func (w *watchRunner) generate(ctx context.Context, bufGenYAMLFile bufconfig.BufGenYAMLFile) {
+	err := w.runner.run(ctx, w.container, bufGenYAMLFile)
 	if ctx.Err() != nil {
 		return
 	}
@@ -218,7 +226,7 @@ func (w *watchRunner) addDirPaths(ctx context.Context, dirPaths []string) {
 	for _, dirPath := range newDirPaths {
 		if err := w.watcher.AddDirPath(dirPath); err != nil {
 			delete(w.watchedDirPaths, dirPath)
-			w.container.Logger().DebugContext(ctx, "cannot watch directory", xslog.ErrorAttr(err))
+			w.container.Logger().WarnContext(ctx, "cannot watch directory", xslog.ErrorAttr(err))
 		}
 	}
 }
@@ -250,8 +258,8 @@ func (w *watchRunner) updateExcludeDirPaths() error {
 func (w *watchRunner) addWorkspacePaths(ctx context.Context, dirPath string) bool {
 	workspaceDirPath, controllingWorkspace, err := getControllingWorkspace(ctx, w.container.Logger(), w.runner.storageosProvider, dirPath)
 	if err != nil {
-		w.container.Logger().DebugContext(ctx, "cannot find controlling workspace", xslog.ErrorAttr(err))
-		return len(w.watchedDirPaths) > 0
+		w.container.Logger().WarnContext(ctx, "cannot find controlling workspace", xslog.ErrorAttr(err))
+		return false
 	}
 	if controllingWorkspace == nil {
 		return false

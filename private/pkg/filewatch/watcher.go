@@ -85,6 +85,14 @@ func (w *watcher) AddDirPath(dirPath string) error {
 	if err != nil {
 		return err
 	}
+	// WalkDir does not follow a root directory that is a symbolic link.
+	fileInfo, err := os.Lstat(absDirPath)
+	if err == nil && fileInfo.Mode()&fs.ModeSymlink != 0 {
+		absDirPath, err = filepath.EvalSymlinks(absDirPath)
+		if err != nil {
+			return err
+		}
+	}
 	w.lock.Lock()
 	w.rootDirPaths[absDirPath] = struct{}{}
 	w.lock.Unlock()

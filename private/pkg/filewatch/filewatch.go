@@ -17,7 +17,13 @@ package filewatch
 
 import (
 	"log/slog"
+
+	"github.com/fsnotify/fsnotify"
 )
+
+// ErrEventOverflow is sent on Errors when changes were dropped because they
+// were not read quickly enough, so callers should assume any watched file changed.
+var ErrEventOverflow = fsnotify.ErrEventOverflow
 
 // Event is a change to a watched file, or to a file or directory within a watched directory.
 type Event struct {
@@ -35,7 +41,9 @@ type Event struct {
 type Watcher interface {
 	// AddDirPath watches the directory and its subdirectories, including those
 	// created later. A directory that does not exist yet is watched once it is
-	// created. Hidden subdirectories are skipped and symbolic links are not followed.
+	// created. Hidden subdirectories are skipped and symbolic links within it
+	// are not followed. If the directory itself is a symbolic link, it is
+	// resolved and changes are reported with the resolved path.
 	AddDirPath(dirPath string) error
 	// AddFilePath watches the single file, which does not need to exist yet.
 	// Adding it again re-establishes the watch if its directory was recreated.

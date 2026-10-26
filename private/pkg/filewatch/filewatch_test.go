@@ -133,6 +133,21 @@ func TestWatchDirPathNotExistYet(t *testing.T) {
 	requireEventForPath(t, watcher, otherFilePath)
 }
 
+func TestWatchDirPathSymlink(t *testing.T) {
+	t.Parallel()
+	targetDirPath, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	symlinkDirPath := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(targetDirPath, symlinkDirPath))
+	watcher := newTestWatcher(t)
+	require.NoError(t, watcher.AddDirPath(symlinkDirPath))
+
+	// Changes are reported with the resolved path.
+	filePath := filepath.Join(targetDirPath, "a.proto")
+	require.NoError(t, os.WriteFile(filePath, []byte("a"), 0600))
+	requireEventForPath(t, watcher, filePath)
+}
+
 func TestWatchDirPathIgnoresHiddenDirs(t *testing.T) {
 	t.Parallel()
 	dirPath := t.TempDir()

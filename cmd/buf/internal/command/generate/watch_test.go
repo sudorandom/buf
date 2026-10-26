@@ -294,6 +294,87 @@ func TestWatchConfigOverrideFile(t *testing.T) {
 	watchTest.requireStop(t)
 }
 
+func TestWatchConfigOverrideFileDirRecreated(t *testing.T) {
+	t.Parallel()
+	inputDirPath := t.TempDir()
+	aProtoFilePath := filepath.Join(inputDirPath, "a", "v1", "a.proto")
+	writeTestFile(t, aProtoFilePath, "syntax = \"proto3\";\npackage a.v1;\n")
+	configDirPath := filepath.Join(t.TempDir(), "config")
+	configFilePath := filepath.Join(configDirPath, "config.yaml")
+	writeTestFile(t, configFilePath, "version: v2\n")
+
+	watchTest := startWatchTest(
+		t,
+		inputDirPath,
+		"--config",
+		configFilePath,
+		"--template",
+		testTemplate,
+		"-o",
+		t.TempDir(),
+		"--watch",
+	)
+	watchTest.requireStderrContains(t, "watching for changes")
+
+	// The directory of the config file is removed and recreated, as by
+	// switching branches, which loses its watch until the next run.
+	require.NoError(t, os.RemoveAll(configDirPath))
+	watchTest.requireStderrContains(t, "ERROR\tgeneration failed")
+	writeTestFile(t, configFilePath, "version: v2\n")
+	writeTestFile(t, aProtoFilePath, "syntax = \"proto3\";\npackage a.v1;\nmessage A {}\n")
+	watchTest.requireStderrCount(t, "generation succeeded", 2)
+
+	// The config file is watched again.
+	writeTestFile(t, configFilePath, "version: v2\nlint:\n  use:\n    - STANDARD\n")
+	watchTest.requireStderrContains(t, changeDetectedLine(configFilePath))
+	watchTest.requireStderrCount(t, "generation succeeded", 3)
+
+	watchTest.requireStop(t)
+}
+
+func TestWatchWorkspaceLookupError(t *testing.T) {
+	t.Parallel()
+	rootDirPath := t.TempDir()
+	aDirPath := filepath.Join(rootDirPath, "a")
+	writeTestFile(t, filepath.Join(aDirPath, "buf.yaml"), "version: v2\n")
+	writeTestFile(t, filepath.Join(aDirPath, "a", "v1", "a.proto"), "syntax = \"proto3\";\npackage a.v1;\n")
+	// A directory with both a buf.work.yaml and a buf.yaml has no controlling workspace.
+	bDirPath := filepath.Join(rootDirPath, "b")
+	writeTestFile(t, filepath.Join(bDirPath, "buf.yaml"), "version: v2\n")
+	writeTestFile(t, filepath.Join(bDirPath, "buf.work.yaml"), "version: v1\n")
+	bProtoFilePath := filepath.Join(bDirPath, "b", "v1", "b.proto")
+	writeTestFile(t, bProtoFilePath, "syntax = \"proto3\";\npackage b.v1;\n")
+	templateFilePath := filepath.Join(rootDirPath, "buf.gen.yaml")
+	writeTestFile(
+		t,
+		templateFilePath,
+		`version: v2
+plugins:
+  - local: protoc-gen-files-to-generate-yaml
+    out: gen
+inputs:
+  - directory: `+aDirPath+`
+  - directory: `+bDirPath+"\n",
+	)
+
+	watchTest := startWatchTest(
+		t,
+		"--template",
+		templateFilePath,
+		"-o",
+		t.TempDir(),
+		"--watch",
+	)
+	watchTest.requireStderrContains(t, "WARN\tcannot find controlling workspace")
+	watchTest.requireStderrContains(t, "watching for changes")
+
+	// The input is watched directly when its workspace cannot be found.
+	writeTestFile(t, bProtoFilePath, "syntax = \"proto3\";\npackage b.v1;\nmessage B {}\n")
+	watchTest.requireStderrContains(t, changeDetectedLine(bProtoFilePath))
+
+	watchTest.requireStop(t)
+}
+
 func TestWatchProtoFileInput(t *testing.T) {
 	t.Parallel()
 	inputDirPath := t.TempDir()
