@@ -1,9 +1,32 @@
 # Changelog
+
 ## [Unreleased]
 
 - Add `--watch` flag to `buf generate`, which keeps running and regenerates whenever a
   `.proto` file in a local module, the workspace configuration, or the template changes.
   Changes to inputs that are not local directories or `.proto` files are not detected.
+- Fix LSP hover and highlighting of CEL expressions whose proto strings contain escape sequences,
+  which placed the ranges of string literals, and of tokens after a `\u` or `\U` escape, wrongly.
+
+## [v1.75.0] - 2026-10-21
+
+- Fix `buf build` dropping `message_set_wire_format`, `weak` field options, and MessageSet
+  extensions, and truncating MessageSet extension ranges, when a file has an unused import.
+- Fix LSP crash when hovering on a CEL string literal containing a byte that is not valid UTF-8,
+  such as `'\x95'` in a protovalidate rule.
+- Add `BUF_DEBUG`, `BUF_LOG_FORMAT`, and `BUF_TIMEOUT` environment variables as defaults for the
+  `--debug`, `--log-format`, and `--timeout` global flags. Flags take precedence when set.
+- Add support to images for option dependencies declared with the `import option` syntax in
+  edition 2024 and later.
+- Add support for Protobuf edition 2026.
+- Update built-in Well-Known Types to Protobuf v36.2.
+- Update managed mode to skip `cc_enable_arenas` for edition 2026 files, where the option was
+  removed.
+- Fix `buf convert` and `buf curl` ignoring the `(pb.enumvalue.json).string` option for enum
+  value JSON names.
+
+## [v1.74.0] - 2026-10-14
+
 - Improve the performance of the `PROTOVALIDATE` lint rule, which is now up to 3x faster
   and allocates less memory on modules using `cel` rules or `example` values.
 - Send the module name of each file to check plugins, which is available as
@@ -26,6 +49,8 @@
 - Update the LSP to support named generation templates such as `buf.go.gen.yaml` and
   `buf.gen.go.yaml`.
 - Improve the `buf curl` error message for methods that accept a single request message.
+- Add `--config` flag to `buf lsp serve` to use a `buf.yaml` file or data in place of
+  discovering `buf.yaml` files. Workspaces are resolved from the editor's root folder.
 - Deduplicate remote input fetches within a single command invocation, so that multiple
   `inputs` in a `buf.gen.yaml` that resolve to the same archive, git repository, or image
   are fetched once instead of once per input.
@@ -1615,7 +1640,9 @@ buf check breaking proto --against .git#branch=master,subdir=proto
 
 Initial beta release.
 
-[Unreleased]: https://github.com/bufbuild/buf/compare/v1.73.0...HEAD
+[Unreleased]: https://github.com/bufbuild/buf/compare/v1.75.0...HEAD
+[v1.75.0]: https://github.com/bufbuild/buf/compare/v1.74.0...v1.75.0
+[v1.74.0]: https://github.com/bufbuild/buf/compare/v1.73.0...v1.74.0
 [v1.73.0]: https://github.com/bufbuild/buf/compare/v1.72.0...v1.73.0
 [v1.72.0]: https://github.com/bufbuild/buf/compare/v1.71.0...v1.72.0
 [v1.71.0]: https://github.com/bufbuild/buf/compare/v1.70.0...v1.71.0
